@@ -4,6 +4,10 @@ name: Probe auction houses
 # so you can match your in-game AH to a house id for data/houses.json.
 on:
   workflow_dispatch:
+    inputs:
+      ruleset:
+        description: "Ruleset id in the API path (1 PvP, 2 Normal, 3 RP, 15 RP-PvP)"
+        default: "1"
 
 permissions:
   contents: read
@@ -21,4 +25,5 @@ jobs:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
           REGION: us
+          RULESET: ${{ inputs.ruleset }}
         run: node tools/probe-houses.mjs
