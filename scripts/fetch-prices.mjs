@@ -283,7 +283,7 @@ async function main() {
     console.log(`${faction}: house ${hid}, ${scan.totalAuctions} auctions, ${Object.keys(scan.items).length} tracked items listed`);
   }
   const prev = existsSync(OUT) ? JSON.parse(await readFile(OUT, "utf8")) : null;
-  const out = { updated: new Date().toISOString(), region: REGION.toUpperCase(), ruleset: { id: RULESET_ID, name: "PvP" }, crateIds, factions };
+  const out = { updated: new Date().toISOString(), region: REGION.toUpperCase(), ruleset: { id: RULESET_ID, name: "Normal" }, crateIds, factions };
   // keep a short daily history of the cheapest unit price per item for trend arrows
   out.history = prev?.history || {};
   for (const [f, d] of Object.entries(factions)) {

@@ -45,6 +45,7 @@ jobs:
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          REGION: us
           EVENT: ${{ github.event_name }}
           MINUTES: ${{ inputs.minutes || '330' }}
         run: |
