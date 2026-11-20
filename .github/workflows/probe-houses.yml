@@ -1,0 +1,24 @@
+name: Probe auction houses
+
+# Manual only: lists every auction house with the cheapest price and total units of a few commodities,
+# so you can match your in-game AH to a house id for data/houses.json.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe US houses
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          REGION: us
+        run: node tools/probe-houses.mjs
