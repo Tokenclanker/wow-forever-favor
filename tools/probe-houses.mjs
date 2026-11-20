@@ -22,7 +22,7 @@ for (const h of houses) {
   const r = await get(`/data/wow/ruleset/1/auctions/${h.id}/commodities`);
   if (!r.json) { console.log(`${h.id} ${h.name}: HTTP ${r.status}`); continue; }
   const parts = Object.entries(ITEMS).map(([iid, n]) => {
-    const ls = r.json.auctions.filter(a => a.item.id === Number(iid));
+    const ls = (r.json.auctions || []).filter(a => a.item.id === Number(iid));
     if (!ls.length) return `${n}: none`;
     const min = Math.min(...ls.map(a => a.unit_price)), units = ls.reduce((s, a) => s + a.quantity, 0);
     return `${n}: ${g(min)} / ${units} units`;
