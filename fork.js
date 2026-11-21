@@ -10,6 +10,13 @@ css.rel = "stylesheet";
 css.href = "fork.css";
 document.head.append(css);
 
+// "Vendor flips" (flips.html, fork-only) in the header tabs and footer tool list of every page.
+for (const nav of document.querySelectorAll("nav.tabs, .site-foot nav ul")) {
+  if (nav.querySelector('a[href="flips.html"]')) continue;
+  const a = Object.assign(document.createElement("a"), { href: "flips.html", textContent: "Vendor flips" });
+  if (nav.tagName === "UL") { const li = document.createElement("li"); li.append(a); nav.append(li); } else nav.append(a);
+}
+
 const faction = () => (document.body.dataset.faction === "alliance" ? "alliance" : "horde");
 const href = id => `${BASE}${faction()}/item-${id}`;
 

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor flips · WoW Forever Market Tools</title>
+<meta name="description" content="WoW Forever items listed on the NA PvE (Normal) auction house below what a vendor pays for them: buy them and sell them to any vendor.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='9' width='24' height='18' rx='2' fill='%23b8862f'/%3E%3Cpath d='M4 14h24M16 9v18' stroke='%23412c0c' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="9" width="24" height="18" rx="2"/><path d="M4 14h24M16 9v18"/></svg>
+      <span class="brand-name"><small>WoW Forever</small><b>Market Tools</b></span>
+    </a>
+    <nav class="tabs" aria-label="Tools"><a href="./">Profession leveling</a><a href="favor.html">Merchant's Favor</a><a href="writs.html">Craftsman's Writs</a><a href="money.html">Money making</a><a href="flips.html" aria-current="page">Vendor flips</a></nav>
+    <div class="seg" role="radiogroup" aria-label="Faction">
+      <button data-faction="alliance" role="radio">Alliance</button>
+      <button data-faction="horde" role="radio">Horde</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <section class="intro">
+    <span class="eyebrow">Buy low, sell to a vendor</span>
+    <h1>Vendor flips</h1>
+    <p class="lead">Items listed on the auction house for less than a vendor pays for them. Buy them, then sell them to any vendor.</p>
+    <div class="intro-meta">
+      <p class="status" id="status">Loading…</p>
+      <span class="pill" id="market">US · Normal</span>
+    </div>
+  </section>
+
+  <section class="hero" id="hero" aria-live="polite"></section>
+
+  <section class="panel settings" aria-label="Filters">
+    <div class="controls">
+      <div class="ctl">
+        <label for="min">Hide flips worth less than</label>
+        <select id="min">
+          <option value="0">Show all</option>
+          <option value="50">50c in total</option>
+          <option value="100">1s in total</option>
+          <option value="500">5s in total</option>
+          <option value="2000">20s in total</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <span class="lbl">Also buy from</span>
+        <label class="chk"><input id="neutral" type="checkbox"> Blackwater AH (neutral)</label>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Flips, biggest total profit first</h2>
+        <p>Profit = vendor price − AH price, for every unit listed below the vendor price.</p>
+      </div>
+    </div>
+    <div class="table-scroll sticky">
+      <table class="flips">
+        <thead><tr><th>Item</th><th>AH</th><th class="num">Cheapest</th><th class="num">Vendor pays</th><th class="num">Profit each</th><th class="num">Units</th><th class="num">Buy all for</th><th class="num">Profit</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <details class="explain notes">
+    <summary>How this works</summary>
+    <ul>
+      <li><b>What counts:</b> every listing whose price per item is below the item's vendor sell price. "Units" is how many items are listed below that price; "Profit" is what you make buying all of them and selling them to a vendor. Buying on the AH costs no fee or deposit, and vendors take any amount.</li>
+      <li><b>Small margins add up slowly.</b> Crafted gear is bought one auction at a time and takes a bag slot each, so a few copper per item is rarely worth it. Look at "Profit each" as well as the total.</li>
+      <li><b>Prices are up to about an hour old.</b> Blizzard publishes an auction snapshot about once an hour, so some of these may already be bought by someone else. Check the auction house before you buy.</li>
+      <li><b>Vendor prices</b> come from Blizzard's WoW Forever item data. Before buying a lot of something, hover over one in your bags to confirm what a vendor pays.</li>
+      <li><b>Which items:</b> only the items this site tracks: crafting materials, crafted items, Waylaid Crate materials and Craftsman's Writs. Gear that drops from mobs isn't included.</li>
+      <li><b>Price history:</b> the ↗ next to an item opens its price history on wowauctions.net.</li>
+    </ul>
+  </details>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap foot">
+    <div>
+      <b>WoW Forever Market Tools</b>
+      <p>Live NA PvE (Normal) auction house prices, turned into answers. Not affiliated with Blizzard Entertainment.</p>
+      <p id="updated"></p>
+    </div>
+    <nav aria-label="Tools (footer)">
+      <h2>Tools</h2>
+      <ul><li><a href="./">Profession leveling</a></li><li><a href="favor.html">Merchant's Favor</a></li><li><a href="writs.html">Craftsman's Writs</a></li><li><a href="money.html">Money making</a></li><li><a href="flips.html">Vendor flips</a></li></ul>
+    </nav>
+    <div>
+      <h2>Project</h2>
+      <ul><li><a href="https://github.com/AidVir/wow-forever-favor">Source on GitHub</a></li><li><a href="https://github.com/Tokenclanker/wow-forever-favor">This NA copy</a></li><li><a href="https://www.wowhead.com/forever">Wowhead Forever</a></li></ul>
+    </div>
+  </div>
+</footer>
+<script type="module" src="flips.js"></script>
+<script type="module" src="fork.js"></script>
+</body>
+</html>
