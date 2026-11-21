@@ -46,6 +46,9 @@ done
 sed -i 's/EU PvP auction house/NA PvE (Normal) auction house/g; s/Live EU PvP auction house prices/Live NA PvE (Normal) auction house prices/g; s/EU · PvP/US · Normal/g' \
   index.html favor.html writs.html money.html
 sed -i 's/name: "PvP" }/name: "Normal" }/' scripts/fetch-prices.mjs
+for f in index.html favor.html writs.html money.html; do   # fork.js: wowauctions.net history links
+  grep -q 'src="fork.js"' "$f" || sed -i 's|^</body>|<script type="module" src="fork.js"></script>\n</body>|' "$f"
+done
 wf=.github/workflows/update-prices.yml
 if ! grep -q '^ *REGION: us$' "$wf"; then
   sed -i 's/^\( *\)BLIZZARD_CLIENT_SECRET: \(.*\)$/\1BLIZZARD_CLIENT_SECRET: \2\n\1REGION: us/' "$wf"

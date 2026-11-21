@@ -1,0 +1,10 @@
+/* Fork-only styles for fork.js (loaded by it). Uses the tokens from style.css. */
+a.ah-hist {
+  margin-left: 0.25em;
+  font-size: 0.8em;
+  color: var(--muted);
+  text-decoration: none;
+  vertical-align: 0.1em;
+}
+a.ah-hist:hover,
+a.ah-hist:focus-visible { color: var(--accent); }
