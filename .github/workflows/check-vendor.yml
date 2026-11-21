@@ -1,16 +1,19 @@
-name: Check vendor prices
+name: Refresh vendor prices
 
-# Manual only: compares data/recipes.json vendor sell prices with Blizzard's current item data for the
-# Vendor flips candidates (and any extra item ids given).
+# Weekly and on demand: compares every tracked item's vendor sell price in data/recipes.json with
+# Blizzard's current WoW Forever item data and commits the differences to data/vendor-fix.json (only
+# that file), which the Vendor flips page uses. Given item ids, it only checks those and saves nothing.
 on:
+  schedule:
+    - cron: "53 11 * * 1"   # Mondays 5:53 AM Central
   workflow_dispatch:
     inputs:
       ids:
-        description: "Extra item ids to check (comma or space separated), or all"
+        description: "Only check these item ids (comma or space separated). Empty = all items, and save"
         default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
@@ -24,5 +27,15 @@ jobs:
         env:
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
-          IDS: ${{ inputs.ids }}
+          IDS: ${{ inputs.ids || 'all' }}
+          WRITE: "1"
         run: node tools/check-vendor.mjs
+      - name: Commit changes
+        run: |
+          git add data/vendor-fix.json
+          git diff --cached --quiet && { echo "No vendor price changes."; exit 0; }
+          git config user.name "vendor-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "Refresh vendor prices"
+          for i in 1 2 3; do git pull -q --rebase origin main && git push -q origin HEAD:main && exit 0; sleep 5; done
+          exit 1
