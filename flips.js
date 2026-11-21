@@ -1,6 +1,7 @@
 // Vendor flips (fork-only page): items listed on the AH for less than a vendor pays for them.
 // Uses data/prices.json (cheapest listings per house, price per item) and the vendor sell price `s`
-// in data/recipes.json items (Blizzard's WoW Forever item data).
+// in data/recipes.json items, corrected by data/vendor-fix.json where Blizzard's current item data differs
+// (made with tools/check-vendor.mjs; Iron Grenade, for one, is 1s 25c now, not 5s).
 import { $, store, esc, gold, loadPrices, loadJson, ago, bindFaction, wh } from "./common.js";
 
 const state = {
@@ -8,7 +9,8 @@ const state = {
   neutral: store.get("neutral", false),
   min: store.get("fl:min", 100),
 };
-let PRICES, ITEMS;
+let PRICES, ITEMS, FIX = {};
+const vendorOf = id => FIX[id] ?? ITEMS[id]?.s;
 
 const plus = c => `<span class="pos">+${gold(c)}</span>`;
 
@@ -19,7 +21,7 @@ function flips() {
   for (const h of houses) {
     const items = PRICES.factions[h]?.items || {};
     for (const [id, book] of Object.entries(items)) {
-      const vendor = ITEMS[id]?.s;
+      const vendor = vendorOf(id);
       if (!vendor || !book?.length || book[0][0] >= vendor) continue;
       let units = 0, cost = 0;
       for (const [p, q] of book) { if (p >= vendor) break; units += q; cost += p * q; }
@@ -81,8 +83,9 @@ async function refresh() {
 
 async function load() {
   try {
-    const [p, rec] = await Promise.all([loadPrices(), loadJson("data/recipes.json")]);
-    PRICES = p; ITEMS = rec.items;
+    const [p, rec, fix] = await Promise.all([loadPrices(), loadJson("data/recipes.json"),
+      loadJson("data/vendor-fix.json").catch(() => null)]);
+    PRICES = p; ITEMS = rec.items; FIX = fix?.items || {};
     $("#status").innerHTML = `Prices updated <b>${ago(PRICES.updated)}</b>`;
     const u = $("#updated"); if (u) u.textContent = `Prices from ${new Date(PRICES.updated).toLocaleString()}.`;
     bind(); render();
