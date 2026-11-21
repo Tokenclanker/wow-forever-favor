@@ -69,6 +69,7 @@ for f in $(git ls-files '*.js' '*.mjs'); do node --check "$f" || { echo "::error
 git commit -q -m "Sync with AidVir/wow-forever-favor ($UP)" -m "Keeps this fork's NA PvE prices, houses and wording." -m "${SYNC_TRAILER:-}"
 for i in 1 2 3; do
   git push -q origin HEAD:main && break
+  [ "$i" = 3 ] && { echo "::error::Push failed three times"; exit 1; }
   git pull -q --no-rebase --no-edit origin main   # the price bot pushed meanwhile; its commits only touch price data
 done
 echo "Synced to upstream $UP."
