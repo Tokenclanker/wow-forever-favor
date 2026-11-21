@@ -1,5 +1,5 @@
 import { $, store, esc, gold, makeBook, buyCost, consume, listed, minPrice, loadPrices, loadJson, ago, bindFaction, wh, marketTrend, projectPrice, trendLabel } from "./common.js";
-import { FISH_SECONDS, catchChance, catchesPerPoint, spotYield, lureOptions, openSpots, seasonFish, sameCatch, sameCatchText } from "./fishing.js";
+import { FISH_SECONDS, catchChance, catchesPerPoint, spotYield, lureOptions, openSpots, seasonFish, sameCatch, sameCatchText, fitPole } from "./fishing.js";
 
 const RARE_STATIONS = new Set(["Black Anvil", "Black Forge", "Arcane Forge", "Moonwell", "Icebellow Anvil", "Master Forge", "Anarchist's Workbench"]);
 const state = {
@@ -12,7 +12,8 @@ const state = {
   patterns: (v => ["all", "buyable", "vendor", "trainer"].includes(v) && !(v === "all" && !store.get("lv:patternsV2", false)) ? v : "buyable")(store.get("lv:patterns", "buyable")),
   time: store.get("lv:time", 5),
   level: store.get("lv:level", 60),
-  fast: store.get("lv:fast", true),
+  // route shape: "afk" = fewer, longer steps (big batches); "profit" = cheapest recipe at every point
+  mode: (v => ["afk", "profit"].includes(v) ? v : "afk")(store.get("lv:mode", "afk")),
   sell: (v => ["ah", "vendor", "none"].includes(v) ? v : "ah")(store.get("lv:sell", "ah")),
   wait: (v => [1, 3, 7].includes(v) ? v : 3)(store.get("lv:wait", 3)),
   mining: store.get("lv:mining", false),
@@ -25,6 +26,7 @@ const state = {
   pole: store.get("lv:pole", 0),
   hourValue: store.get("lv:hourValue", 10),
   cookCatch: store.get("lv:cookCatch", true), // Fishing + Cooking: cook what you catch before buying anything
+  owned: store.get("lv:owned", ""), // "Materials I already have": pasted "20x Linen Cloth" lines
 
 };
 let PRICES, REC, ITEMS, FISH, FISH_IDS = new Set(); // FISH_IDS: everything fishing can catch
@@ -59,13 +61,22 @@ function levelCap() {
   const trained = RANKS.filter(k => state.level >= k.level).length; // ranks are in level order
   return [75, 150, 225, 300][trained];
 }
-// Recipes needing more crafts than this per skill point are skipped while a faster one exists.
+// Two route modes ("Route" control, state.mode):
+// - "profit": the cheapest recipe at every skill point, switching freely, slow recipes allowed.
+// - "afk" (default): fewer, longer steps, for queueing big batches.
+//   * Recipes needing more than MAX_CRAFTS_PER_POINT crafts per point are skipped while a faster one exists
+//     that costs at most AFK_SLOW (2) times as much.
+//   * A recipe is scored by its average cost per point over the run it can still cover (until it gets slow,
+//     at most AFK_HORIZON points), with that run's reagents bought from the order book at once and AH sales
+//     counted AFK_RISK (10%) lower, plus a switch penalty of AFK_SWITCH points' worth of crafting ("scale":
+//     the cheapest gross cost per point here) spread over the run: recipes that stay orange/yellow long win.
+//   * The current recipe is kept until it gets slow, unless another one saves more than AFK_STICK (45%) of
+//     the scale per point, lasts AFK_MIN_RUN (15) points (or as long as the current one) and saves more than
+//     the switch penalty over its run.
+//   * A step under AFK_MERGE (5) points goes to the step before or after it when that costs less than the
+//     switch penalty (found in the first pass, applied in the second: `merge`).
 const MAX_CRAFTS_PER_POINT = 3;
-// Stay on the current recipe unless another one is clearly cheaper (fewer, longer steps).
-// Switch recipes only when the other one is clearly cheaper: STICK (15%) of its cost per point, and at least
-// stickMin(skill) copper per point, which grows with skill level because everything costs more higher up.
-// A short detour (a recipe usable only a few more points) must also save at least MIN_RUN points' worth in total.
-const STICK = 0.15, MIN_RUN = 5;
+const AFK_STICK = 0.45, AFK_MIN_RUN = 15, AFK_HORIZON = 40, AFK_SWITCH = 10, AFK_SLOW = 2, AFK_MERGE = 5, AFK_RISK = 0.1;
 const stickMin = s => 20 + s; // copper per point: 40c at skill 20, 1s 20c at 100, 2s 70c at 250
 // Before the route is known, a pattern's price is spread over this many points.
 const ONCE_SPREAD = 5; // 10%, at least 50 copper per point
@@ -84,7 +95,7 @@ function profData() {
 // with this profession if a recipe is known at the current skill. Returns {cost, plan:[[kind,id,qty]]}.
 function acquire(ctx, id, qty, depth = 0, noAh = false) {
   const have = ctx.inv ? Math.min(qty, ctx.inv.qty(id)) : 0;
-  const invCost = have * (have ? ctx.inv.value(id) : 0);
+  const invCost = have ? ctx.inv.valueOf(id, have) : 0;
   if (have === qty) return { cost: invCost, plan: [["inv", id, have, invCost]] };
   const need = qty - have;
   const it = ITEMS[id];
@@ -111,9 +122,13 @@ function acquire(ctx, id, qty, depth = 0, noAh = false) {
   return best;
 }
 let BOOK0 = {};
-function allowed(r) {
+// Stations listed under "Crafting stations I can use" for the current profession and range (set by render()).
+// A station that isn't listed isn't needed by any recipe the route can use, so its saved "off" doesn't block.
+let SHOWN_STATIONS = null;
+let EFF_POLE = null; // fishing pole bonus usable at the character level (fitPole)
+function allowed(r, stations = true) {
   if (state.excluded.has(r.id)) return false;
-  if (r.needs && state.stationsOff.has(r.needs)) return false;
+  if (stations && r.needs && state.stationsOff.has(r.needs) && (!SHOWN_STATIONS || SHOWN_STATIONS.has(r.needs))) return false;
   if (r.source === "item") {
     if (state.patterns === "trainer") return false;
     if (otherFaction(r) && patternCost(BOOK0, r).unknown) return false; // other faction's vendor / quest, not on the AH
@@ -150,10 +165,39 @@ function patternText(r, pc) {
   return "pattern: vendor or drop, source not in our data";
 }
 // --- tools ------------------------------------------------------------------------------
-// Recipes can need a tool (Blacksmith Hammer, Arclight Spanner, Gyromatic Micro-Adjustor, Runed rods…).
+// --- crafting stations ---------------------------------------------------------------
+// Stations used by recipes the route could pick: recipes of this profession allowed by "Recipes I can use"
+// that give skill-ups somewhere in the chosen range, plus the recipes (this profession up to the end skill,
+// or the Mining helper with "I can smelt bars") that make their reagents, two levels deep like acquire().
+function stationsFor(prof) {
+  if (state.prof === FISHING || !prof) return [];
+  BOOK0 = makeBook(PRICES, state.faction, state.neutral); // allowed() prices patterns from it
+  const end = Math.min(300, state.to, levelCap()), from = state.from;
+  const ok = r => allowed(r, false);
+  const used = prof.recipes.filter(r => ok(r) && Math.max(r.learn, from) < Math.min(r.grey, end));
+  const helpers = state.mining && prof.name !== "Mining" ? REC.professions.find(p => p.name === "Mining")?.recipes || [] : [];
+  const makers = [...prof.recipes.filter(r => r.learn < end), ...helpers].filter(ok);
+  const out = new Set(used.map(r => r.needs).filter(Boolean));
+  let level = used;
+  for (let d = 0; d < 2 && level.length; d++) {
+    const want = new Set(level.flatMap(r => [...r.reagents.map(([id]) => id), ...(r.tools || []).flatMap(toolOptions)]));
+    level = makers.filter(r => r.item && want.has(r.item));
+    level.forEach(r => { if (r.needs) out.add(r.needs); });
+  }
+  return [...out].sort();
+}
+// Recipes can need a tool (Blacksmith Hammer,Arclight Spanner, Gyromatic Micro-Adjustor, Runed rods…).
 // The route gets each one once, the cheapest way: vendor, AH (not for bind-on-pickup rods) or crafting it.
 const toolName = c => REC.tools?.categories?.[c]?.n || "tool";
 function toolOptions(c) { return REC.tools?.categories?.[c]?.ok || []; }
+// Can this character use tool item `id` while leveling `profName` at `skill`? Some tools need a character
+// level (`lvl`) or a skill in a profession (`sk` + `skill`, e.g. Mithril Blacksmith Hammer: Blacksmithing 195).
+function toolUsable(id, profName, skill) {
+  const t = REC.tools?.items?.[id]; if (!t) return true;
+  if (t.lvl && t.lvl > state.level) return false;
+  if (t.sk && (t.sk !== profName || t.skill > skill)) return false;
+  return true;
+}
 
 // --- selling the results -------------------------------------------------------------
 // Blizzard's API shows listings, not sales. The price job compares hourly snapshots and counts
@@ -272,7 +316,7 @@ function fishRoute(sales, want, cookWant = null) {
     let best = null, here = null;
     const perCatch = new Map(spots.map(sp => [sp, perCatchNow(sp)]));
     for (const sp of spots) for (const o of opts) {
-      const p = catchChance(sp, s + Number(state.pole || 0) + o.bonus);
+      const p = catchChance(sp, s + Number(EFF_POLE ?? state.pole ?? 0) + o.bonus);
       if (p <= 0) continue;
       const casts = cpp / p, hours = casts * sec / 3600;
       const c = { sp, o, p, casts, hours, value: cpp * perCatch.get(sp), lure: hours * o.perHour };
@@ -305,7 +349,11 @@ function fishRoute(sales, want, cookWant = null) {
 // written guides do with grinding stones, bolts and blasting powder.
 // `usage`: skill points each recipe got in the first pass. A pattern or tool bought for a recipe is
 // spread over those points (at least 1), so a pattern bought for 2 crafts carries its full price.
-function plan(future = null, usage = null, cookWant = null) {
+// `opts.mode`: "afk" or "profit" (see AFK_STICK; render() also plans "profit" to compare). `opts.merge`: skill
+// point -> recipe id, from the first pass: points of a tiny step that a neighbouring step's recipe takes over.
+function plan(future = null, usage = null, cookWant = null, { mode = state.mode, merge = null } = {}) {
+  const afk = mode !== "profit";
+  const trace = afk ? new Map() : null; // skill point -> {runs: recipe id -> cost per point, penalty} (for merging)
   const spread = r => Math.max(1, usage ? usage.get(r.id) ?? ONCE_SPREAD : ONCE_SPREAD);
   const prof = profData();
   BOOK0 = makeBook(PRICES, state.faction, state.neutral);
@@ -324,13 +372,21 @@ function plan(future = null, usage = null, cookWant = null) {
   // --- inventory: what earlier steps made; later steps use it before buying more ---------------
   // Each lot remembers the sale credit already counted for it, so using it undoes that credit.
   const lots = new Map(); // item id -> [{st, n, vend, ah, onAh}] (credit per unit)
+  seedOwned(lots); // "Materials I already have": free lots, first in line, so every step uses them before buying
   const inv = {
     qty: id => (lots.get(id) || []).reduce((a, l) => a + l.n, 0),
     // what a unit is worth if kept and sold instead (the cost of using it)
     // Caught fish in "Fishing + Cooking" (with "cook what I catch" on) count at their vendor price, so the
     // route cooks them; the totals still subtract what selling them raw would have paid.
-    value: id => { const l = (lots.get(id) || []).find(x => x.n > 0); return !l ? 0 : l.fish && state.cookCatch ? l.vend : state.sell === "ah" ? l.ah : state.sell === "vendor" ? l.vend : 0; },
+    value: id => { const l = (lots.get(id) || []).find(x => x.n > 0); return !l ? 0 : lotUnit(l); },
+    // total value of the next n units, in the order takeInv uses them (owned lots first, then step output)
+    valueOf: (id, n) => {
+      let sum = 0;
+      for (const l of lots.get(id) || []) { if (n <= 0) break; const k = Math.min(n, l.n); if (k > 0) { sum += k * lotUnit(l); n -= k; } }
+      return sum;
+    },
   };
+  function lotUnit(l) { return l.owned ? 0 : l.fish && state.cookCatch ? l.vend : state.sell === "ah" ? l.ah : state.sell === "vendor" ? l.vend : 0; }
   function takeInv(id, n, user) {
     for (const l of lots.get(id) || []) {
       if (n <= 0) break;
@@ -338,9 +394,10 @@ function plan(future = null, usage = null, cookWant = null) {
       l.n -= k; n -= k;
       l.st.vendor -= k * l.vend; l.st.ah -= k * l.ah; l.st.onAh -= k * l.onAh;
       resaleVendor -= k * l.vend; resaleAh -= k * l.ah;
-      sales.unsell(id, k, k * l.onAh);
+      if (!l.owned) sales.unsell(id, k, k * l.onAh); // your own materials were never counted as sold
       l.st.kept += k;
-      if (user && user !== l.st) user.used.set(id, (user.used.get(id) || 0) + k);
+      if (l.owned) takeOwned(l.st, user, id, k);
+      else if (user && user !== l.st) user.used.set(id, (user.used.get(id) || 0) + k);
     }
   }
   // the output of n crafts of a step goes to the inventory, counted as sold unless a later step uses it
@@ -358,6 +415,22 @@ function plan(future = null, usage = null, cookWant = null) {
     const c = [minPrice(BOOK0, id), ITEMS[id]?.v].filter(x => x != null);
     return c.length ? Math.floor(Math.min(...c) * 0.9) : 0;
   };
+  // Credit per craft for the result of n crafts of r costing `cost` each, in the chosen selling mode. Vendor
+  // credit is capped so "almost free" crafts don't win with 100 green crafts per point; AH credit is limited
+  // by what the market can absorb. An intermediate later steps need is worth what buying it would cost.
+  function credit(r, cost, n) {
+    let back = 0;
+    if (r.item && state.sell !== "none") {
+      const v = sales.value(r.item, r.qty * n, false);
+      back = state.sell === "ah" && v.onAh > 0 ? v.ah / n : Math.min(v.vendor / n, cost * 0.75);
+    }
+    const left = r.item ? futureLeft?.get(r.item) || 0 : 0;
+    if (left > 0) {
+      const units = r.qty * n, u = Math.min(units, left), rep = replaceUnit(r.item);
+      if (rep) back = Math.max(back, Math.min(cost, (u * rep + (units - u) * (back / r.qty)) / n));
+    }
+    return back;
+  }
 
   // --- tools -----------------------------------------------------------------------------
   const owned = new Set();
@@ -365,6 +438,7 @@ function plan(future = null, usage = null, cookWant = null) {
   function toolGet(ctx, c) {
     let best = null;
     for (const id of toolOptions(c)) {
+      if (!toolUsable(id, prof.name, ctx.skill)) continue;
       const a = acquire(ctx, id, 1, 0, !!REC.tools?.items?.[id]?.bop); // bind-on-pickup tools can't come from the AH
       if (a && (!best || a.cost < best.cost)) best = { ...a, id };
     }
@@ -401,7 +475,8 @@ function plan(future = null, usage = null, cookWant = null) {
     for (let k = 0; k < n; k++) {
       const ctx2 = { book, makers, skill: s, inv, hasTool };
       for (const [id, q] of r.reagents) {
-        demand.set(id, (demand.get(id) || 0) + q);
+        const fromInv = Math.min(q, inv.qty(id)); // what the inventory covers isn't demand for the next pass
+        if (q > fromInv) demand.set(id, (demand.get(id) || 0) + q - fromInv);
         const a = acquire(ctx2, id, q);
         if (a) spent += applyPlan(a, s, st);
       }
@@ -432,6 +507,8 @@ function plan(future = null, usage = null, cookWant = null) {
   }
 
   const end = state.prof === FISHING ? 0 : Math.min(300, state.to, levelCap());
+  // points from s that r can be crafted for before it needs more than MAX_CRAFTS_PER_POINT crafts a point (at least 1)
+  const reach = (r, s) => Math.max(1, Math.min(end, Math.ceil(r.grey - (r.grey - r.yellow) / (MAX_CRAFTS_PER_POINT * r.ups))) - s);
   const rankFees = []; // [{name, cap, fee}] rank training paid along the route (null = not a trainer fee, e.g. a book)
   if (state.from <= 1 && REC.ranks?.[prof.name]?.Apprentice) total += REC.ranks[prof.name].Apprentice;
   for (let s = Math.max(1, state.from); s < end; ) {
@@ -451,19 +528,7 @@ function plan(future = null, usage = null, cookWant = null) {
       if (cost == null) continue;
       const tools = r.tools ? toolsNeeded(ctx, r) : null;
       if (r.tools && !tools) continue; // needs a tool the route can't get yet
-      // Credit for the result in the chosen selling mode. Vendor credit is capped so "almost free" crafts
-      // don't win with 100 green crafts per point; AH credit is limited by what the market can absorb.
-      let back = 0;
-      if (r.item && state.sell !== "none") {
-        const v = sales.value(r.item, r.qty, false);
-        back = state.sell === "ah" && v.onAh > 0 ? v.ah : Math.min(v.vendor, cost * 0.75);
-      }
-      // an intermediate later steps need is worth what buying it would cost (up to what they need)
-      const left = r.item ? futureLeft?.get(r.item) || 0 : 0;
-      if (left > 0) {
-        const u = Math.min(r.qty, left), rep = replaceUnit(r.item);
-        if (rep) back = Math.max(back, Math.min(cost, u * rep + (r.qty - u) * (back / r.qty)));
-      }
+      const back = credit(r, cost, 1);
       const pat = learned.has(r.id) ? 0 : patternCost(book, r).cost;
       // cost per skill point. A profitable craft (net < 0) is scored by its profit per craft, not divided by
       // the skill-up chance, otherwise low-chance green recipes would look "better" the less they level you.
@@ -472,6 +537,27 @@ function plan(future = null, usage = null, cookWant = null) {
       const run = ((net >= 0 ? net / c : net) + timeCost / c) / r.ups; // per point, without one-time costs
       const per = run + once / spread(r); // one-time costs spread over the points this recipe gets
       const cand = { r, per, run, once, cost, back, c, plan, tools, slow: 1 / (c * r.ups) > MAX_CRAFTS_PER_POINT };
+      if (afk) {
+        // The run this recipe can still cover (until it gets slow, at most AFK_HORIZON points) and its average
+        // cost per point over it, buying the whole run's reagents from the order book at once: a recipe whose
+        // reagents run out (or get dear) after a few crafts covers fewer points, and its output what the AH takes.
+        const h = Math.min(reach(r, s), AFK_HORIZON);
+        let n0 = 0; // expected crafts over those h points
+        for (let k = s; k < s + h; k += r.ups) n0 += 1 / (k === s ? c : Math.max(chance(r, k), 1 / MAX_CRAFTS_PER_POINT / r.ups));
+        let n = Math.max(1, Math.round(n0)), runCost = null;
+        for (; n > 1; n = Math.floor(n / 2)) {
+          runCost = 0;
+          for (const [id, q] of r.reagents) { const a = acquire(ctx, id, q * n); if (!a) { runCost = null; break; } runCost += a.cost; }
+          if (runCost != null) break;
+        }
+        if (n <= 1) { n = 1; runCost = cost; }
+        // AH sales are an estimate (and selling is work): in this mode they count AFK_RISK less
+        const cred = credit(r, runCost / n, n), net1 = runCost / n - cred * (state.sell === "ah" ? 1 - AFK_RISK : 1), cpp = n0 / h; // per craft; crafts per point
+        cand.len = n < n0 ? Math.max(1, Math.floor(h * n / n0)) : h;
+        cand.avg = (net1 >= 0 ? net1 * cpp : net1 / r.ups) + timeCost * cpp;
+        cand.gross = (runCost / n + timeCost) * cpp; // what you spend per point, before sale credit: the switching scale
+        cand.onceShare = once / Math.max(1, usage?.get(r.id) ?? cand.len);
+      }
       // made from fish you caught (Fishing + Cooking): every fish it needs is in the catch you're carrying
       cand.ownFish = !!fish && r.reagents.some(([id]) => FISH_IDS.has(id)) && r.reagents.every(([id, q]) => !FISH_IDS.has(id) || inv.qty(id) >= q);
       cands.push(cand);
@@ -480,27 +566,40 @@ function plan(future = null, usage = null, cookWant = null) {
       if (prev && prev.r === r) cur = cand;
     }
     // Skip recipes that need more than MAX_CRAFTS_PER_POINT crafts per point while a faster one exists.
-    if (state.fast && bestFast) best = bestFast;
+    if (afk && bestFast) best = bestFast;
     // "Cook the fish I catch first": a recipe made from your catch beats anything bought, as long as it still
-    // gives skill-ups (and isn't a slow one while "avoid slow recipes" is on)
+    // gives skill-ups (and isn't a slow one in "afk" mode)
     if (fish && state.cookCatch) {
-      const own = cands.filter(x => x.ownFish && !(state.fast && x.slow));
+      const own = cands.filter(x => x.ownFish && !(afk && x.slow));
       if (own.length) {
         best = own.reduce((a, x) => x.per < a.per ? x : a);
         if (cur && !cur.ownFish) cur = null;
       }
     }
-    // Keep crafting the current recipe unless the best one is clearly cheaper, so the route doesn't
-    // switch back and forth for a few copper.
-    // points a recipe can still be crafted for before it needs more than MAX_CRAFTS_PER_POINT crafts a point
-    const room = rr => Math.max(0, Math.floor(rr.grey - (rr.grey - rr.yellow) / MAX_CRAFTS_PER_POINT) - s);
-    if (best && cur && cur !== best && !(state.fast && cur.slow && bestFast)) {
-      const gain = cur.per - best.per; // saved per skill point by switching
-      const clearlyCheaper = gain > Math.max(Math.abs(best.per) * STICK, stickMin(s));
-      // a short detour has to be worth it in total: what it saves over the points it can be used for
-      // must beat MIN_RUN points of the minimum saving (unless the current recipe is about to run out)
-      const worthIt = room(cur.r) < MIN_RUN || gain * Math.min(room(best.r), MIN_RUN * 4) >= stickMin(s) * MIN_RUN;
-      if (!clearlyCheaper || !worthIt) best = cur;
+    // "afk": pick by the average cost over the run a recipe can cover plus a switch penalty spread over that
+    // run, and keep the current recipe unless another one is much cheaper for a long run (see AFK_STICK).
+    const hinted = merge?.has(s) ? cands.find(x => x.r.id === merge.get(s)) : null;
+    if (hinted) best = hinted; // the first pass merged a tiny step here
+    else if (afk && best && !(fish && state.cookCatch && best.ownFish)) {
+      // slow recipes are skipped while a fast one exists that costs at most AFK_SLOW times as much
+      // Money is compared on the scale of what a point costs to craft (gross, before sale credit), so a
+      // profitable recipe isn't dropped for one that makes a few silver more.
+      const minOf = (list, f) => Math.min(...list.map(f));
+      const fast = cands.filter(x => !x.slow);
+      const all = minOf(cands, x => x.avg + x.onceShare), scale0 = Math.max(stickMin(s), minOf(cands, x => x.gross));
+      const fastOnly = fast.length > 0 && minOf(fast, x => x.avg + x.onceShare) - all <= scale0 * (AFK_SLOW - 1);
+      const pool = fastOnly ? fast : cands;
+      const scale = Math.max(stickMin(s), minOf(pool, x => x.gross)); // what a point costs at this skill
+      const penalty = scale * AFK_SWITCH; // what one more step "costs"
+      const score = x => x.avg + x.onceShare + penalty / x.len;
+      best = pool.reduce((a, x) => score(x) < score(a) ? x : a);
+      if (cur && cur !== best && !(cur.slow && fastOnly)) {
+        const gain = cur.avg - (best.avg + best.onceShare); // saved per skill point by switching
+        const worthIt = gain > scale * AFK_STICK && best.len >= Math.min(AFK_MIN_RUN, cur.len, end - s)
+          && gain * best.len > penalty;
+        if (!worthIt) best = cur;
+      }
+      trace.set(s, { runs: new Map(cands.map(x => [x.r.id, x.run])), penalty });
     }
     if (!best) {
       // which reagents ran out?
@@ -513,9 +612,9 @@ function plan(future = null, usage = null, cookWant = null) {
       break;
     }
     const { r } = best;
-    // runner-up at this point: the cheapest other recipe (a fast one when "avoid slow recipes" is on)
+    // runner-up at this point: the cheapest other recipe (a fast one in "afk" mode)
     const others = cands.filter(x => x.r !== r);
-    const pool = state.fast && others.some(x => !x.slow) ? others.filter(x => !x.slow) : others;
+    const pool = afk && others.some(x => !x.slow) ? others.filter(x => !x.slow) : others;
     const alt = pool.reduce((a, x) => !a || x.per < a.per ? x : a, null);
     let patPaid = 0;
     if (!learned.has(r.id)) {
@@ -562,6 +661,28 @@ function plan(future = null, usage = null, cookWant = null) {
     s += r.ups;
   }
   settle(steps[steps.length - 1]);
+  // "afk": a tiny step (under AFK_MERGE points) goes to the step before or after it when that recipe could
+  // cover those points for less extra than a switch costs; the next pass crafts it there instead.
+  let mergeOut = null;
+  if (afk) {
+    mergeOut = new Map(merge || []);
+    steps.forEach((st, i) => {
+      if (st.to - st.from >= AFK_MERGE) return;
+      let pick = null;
+      for (const nb of [steps[i - 1], steps[i + 1]]) {
+        if (!nb || nb.r === st.r) continue;
+        let extra = 0, pen = Infinity, pts = [];
+        for (const [k, t] of trace) {
+          if (k < st.from || k >= st.to) continue;
+          const a = t.runs.get(nb.r.id), b = t.runs.get(st.r.id);
+          if (a == null || b == null) { pts = null; break; }
+          extra += (a - b) * st.r.ups; pen = Math.min(pen, t.penalty); pts.push(k);
+        }
+        if (pts?.length && extra <= pen && (!pick || extra < pick.extra)) pick = { extra, pts, id: nb.r.id };
+      }
+      if (pick) for (const k of pick.pts) mergeOut.set(k, pick.id);
+    });
+  }
   const sellList = [...sales.made.entries()].filter(([, m]) => m > 0).map(([id, made]) => {
     const n = sales.sold.get(id) || 0, unit = sales.ahUnit(id), vend = ITEMS[id]?.s || 0;
     return { id, made, n, unit, vend, stat: sales.stat(id), value: n * (unit || 0) + (made - n) * vend };
@@ -587,7 +708,7 @@ function plan(future = null, usage = null, cookWant = null) {
       }
     }
   }
-  return { fish, fishWant, steps, shopping: [...shopping.values()], total, resaleVendor, resaleAh, stuck, capped, rankFees, feeOf, book, sellList, salesInfo: sales.info, stat: sales.stat, trend: sales.trend, supplyDays: sales.supplyDays, demand,
+  return { fish, fishWant, merge: mergeOut, steps, shopping: [...shopping.values()], total, resaleVendor, resaleAh, stuck, capped, rankFees, feeOf, book, sellList, salesInfo: sales.info, stat: sales.stat, trend: sales.trend, supplyDays: sales.supplyDays, demand,
     usage: steps.reduce((m, st) => m.set(st.r.id, (m.get(st.r.id) || 0) + (st.to - st.from)), new Map()) };
 }
 
@@ -626,26 +747,18 @@ function altFact(st) {
     <small>${reag}</small><small>${cost}${extras ? " · " + extras : ""}</small>
     <button class="chip" data-ex="${st.r.id}" title="Excludes ${esc(st.r.name)} from the whole route and re-plans">Use it instead</button></div>`;
 }
-// How a step's recipe is learned, as a short tag in the row and a sentence in the details:
-// trainer (with the skill it is taught at and its fee), pattern (price or source, skill it can be used from),
-// or known from the start.
+// How a step's recipe is learned. The row only tags patterns (something you have to get); trainer and
+// starting recipes, and the skill a pattern is usable from, are in the details (learnText).
 function learnTag(st) {
-  const r = st.r, at = r.learn;
-  if (r.source === "auto") return ` <span class="tag learn" title="Every character knows this recipe">known from the start</span>`;
-  if (r.source === "trainer") {
-    const fee = st.patPaid ? ` · ${gold(st.patPaid)}` : r.train ? " · already learned" : " · fee not in our data";
-    return ` <span class="tag learn train" title="Taught by your profession trainer">trainer · learn at skill ${at}${fee}</span>`;
-  }
-  if (r.source === "item") {
-    const price = st.patPaid ? "pattern " + gold(st.patPaid) : st.pattern?.unknown ? "pattern: price unknown" : st.pattern?.how === "quest" ? "pattern: quest" : st.pattern?.cost ? "pattern: bought earlier" : "pattern";
-    return ` <span class="tag pat" title="${esc(patternText(r, st.pattern).replace(/<[^>]+>/g, ""))}">${price} · usable at skill ${at}</span>`;
-  }
-  return "";
+  const r = st.r;
+  if (r.source !== "item") return "";
+  const price = st.patPaid ? "pattern " + gold(st.patPaid) : st.pattern?.unknown ? "pattern: price unknown" : st.pattern?.how === "quest" ? "pattern: quest" : st.pattern?.cost ? "pattern: bought earlier" : "pattern";
+  return ` <span class="tag pat" title="${esc(patternText(r, st.pattern).replace(/<[^>]+>/g, ""))}">${price}</span>`;
 }
 function learnText(st) {
   const r = st.r, at = r.learn;
   if (r.source === "auto") return "Known from the start (every character has it)";
-  if (r.source === "trainer") return `From your ${esc(r.prof || state.prof)} trainer at skill ${at}${r.train ? `, costs ${gold(r.train)}` : ""}${st.patPaid ? " (paid on this step)" : r.train ? " (learned on an earlier step)" : ""}`;
+  if (r.source === "trainer") return `From your ${esc(r.prof || state.prof)} trainer at skill ${at}${r.train ? `, costs ${gold(r.train)}` : ", fee not in our data"}${st.patPaid ? " (paid on this step)" : r.train ? " (learned on an earlier step)" : ""}`;
   if (r.source === "item") return `${patternText(r, st.pattern)}; usable from skill ${at}`;
   return `Learn at skill ${at}`;
 }
@@ -678,11 +791,12 @@ function renderFish(p) {
     const sp = st.sp;
     const top = [...st.items.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([id, n]) => `${n.toLocaleString("en-GB")} ${wh(id, ITEMS[id]?.n || FISH.items[id]?.n || id)}`).join(", ");
     const away = Math.round((1 - st.p) * 100), awayEnd = Math.round((1 - (st.pEnd ?? st.p)) * 100);
-    const lure = st.o.lure ? `<span class="tag toolget">use ${wh(st.o.lure.id, ITEMS[st.o.lure.id]?.n || FISH.items[st.o.lure.id]?.n)} (+${st.o.bonus})</span> ` : "";
+    const lure = st.o.lure ? `<span class="act-tool">Use ${wh(st.o.lure.id, ITEMS[st.o.lure.id]?.n || FISH.items[st.o.lure.id]?.n)} (+${st.o.bonus})</span>` : "";
     const kept = Math.round(st.kept);
     const val = retVendor ? st.vendor : st.ah;
     return pre + `<tr><td class="num rng">${st.from}–${st.to}</td>
-      <td><b>${esc(sp.name)}</b> <span class="tag">level ${sp.levels[0]}–${sp.levels[1]}</span> ${lure}${kept ? `<span class="tag keep">keep ${kept} for cooking</span>` : ""}
+      <td><b>${esc(sp.name)}</b> <span class="muted">level ${sp.levels[0]}–${sp.levels[1]}</span>
+        ${lure || kept ? `<div class="meta step-act">${[lure, kept ? `<span class="act-keep">Keep ${kept} for cooking</span>` : ""].filter(Boolean).join(" · ")}</div>` : ""}
         <div class="meta">${away || awayEnd ? `${away === awayEnd ? away : `${away}→${awayEnd}`}% get away · ` : ""}none get away at ${sp.full}</div>
         <div class="meta">${top}</div>${(o => o.length ? `<div class="meta">Same catch: ${sameCatchText(FISH, ITEMS, o, esc)}</div>` : "")(sameCatch(open, sp))}</td>
       <td class="num">${Math.round(st.catches).toLocaleString("en-GB")}<small>${Math.round(st.casts).toLocaleString("en-GB")} casts</small></td>
@@ -692,21 +806,79 @@ function renderFish(p) {
   }).join("") + f.ranks.filter(k => !done.has(k.name)).map(rankRow).join("") || `<tr><td colspan="6" class="empty">Nothing to plan.</td></tr>`;
 }
 
+// Shopping-list export. Auctionator's import box (Shopping tab → Import) takes one list per line:
+// `List name^term^term…`, where each term is an advanced search string of 14 ";"-separated fields:
+// query;category;minItemLevel;maxItemLevel;minLevel;maxLevel;minCraftedLevel;maxCraftedLevel;
+// minPrice;maxPrice;quality;tier;expansion;quantity. A query wrapped in "" is an exact-name search,
+// tier "#" means none, empty fields mean any. Source (Auctionator v284, Classic build):
+// Source/Shopping/ImportExport.lua (GetBatchExportString / BatchImportFromString split on "\n" and "^"),
+// Source/Search/Advanced.lua (SplitAdvancedSearch / ReconstituteAdvancedSearch), Constants/Main.lua
+// (AdvancedSearchDivider = ";"), mirrored at
+// https://github.com/zhaochengw/WOW-AddOns-Classic/tree/HEAD/Auctionator/Source (upstream Auctionator repo is no longer on GitHub).
+let EXPORT = { auc: "", txt: "" };
+const aucTerm = (name, qty) => [`"${name}"`, "", "", "", "", "", "", "", "", "", "", "#", "", qty].join(";");
+function shopExport(shop, listName) {
+  const name = id => ITEMS[id]?.n;
+  // "^", ";" and line breaks are the format's separators, so keep them out of names.
+  const clean = s => String(s).replace(/[\^;\r\n"]/g, " ").trim();
+  const ah = shop.filter(e => e.ah > 0 && name(e.id));
+  const auc = ah.length ? [clean(listName), ...ah.map(e => aucTerm(clean(name(e.id)), e.ah))].join("^") : "";
+  const lines = [
+    ...ah.map(e => `${e.ah}x ${name(e.id)}`),
+    ...shop.filter(e => e.vendor > 0).map(e => `${e.vendor}x ${name(e.id) || "item " + e.id} (vendor)`),
+  ];
+  return { auc, txt: lines.length ? `${listName}\n${lines.join("\n")}` : "" };
+}
+
+let copyTimer = 0;
+async function copyText(text) {
+  if (!text) return;
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch { /* insecure context or denied: fall back */ }
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+  }
+  const msg = $("#copyMsg");
+  msg.textContent = ok ? "Copied" : "Couldn't copy: press Ctrl+C on the selected text below";
+  // Last resort: show the text (whichever button was pressed) in the box, selected, for a manual copy.
+  if (!ok) { $("details.export").open = true; const box = $("#aucStr"); box.value = text; box.focus(); box.select(); }
+  clearTimeout(copyTimer); copyTimer = setTimeout(() => { msg.textContent = ""; }, 2000);
+}
+
 function render() {
   if (!PRICES || !REC) return;
+  // a pole the character level can't equip falls back to the best one it can
+  // the pole this character can equip (the saved choice stays, so raising the level brings it back)
+  EFF_POLE = fitPole($("#pole"), state.level, state.pole);
+  syncHash(); // keep the address bar's share link in step with the settings
   const prof = profData();
   $("#market").textContent = `${PRICES.region} · ${PRICES.ruleset.name} · ${PRICES.factions[state.faction].house.name}${state.neutral ? " + Blackwater" : ""}`;
-  // station toggles for this profession
-  const stations = [...new Set(prof.recipes.map(r => r.needs).filter(Boolean))].sort();
-  $("#stations").innerHTML = stations.length ? stations.map(n => `<label class="chk"><input type="checkbox" data-station="${esc(n)}" ${state.stationsOff.has(n) ? "" : "checked"}> ${esc(n)}</label>`).join("") : `<span class="muted">None needed</span>`;
+  // station toggles: only stations recipes of this profession in this range can use (none: the control is hidden)
+  const stations = stationsFor(prof);
+  SHOWN_STATIONS = new Set(stations);
+  $("#stations").innerHTML = stations.map(n => `<label class="chk"><input type="checkbox" data-station="${esc(n)}" ${state.stationsOff.has(n) ? "" : "checked"}> ${esc(n)}</label>`).join("");
 
   const t0 = performance.now();
   const p1 = plan();
-  const p = plan(p1.demand, p1.usage, p1.fishWant); // second pass knows which intermediates the route needs later and how long each recipe is used
+  const p = plan(p1.demand, p1.usage, p1.fishWant, { merge: p1.merge }); // second pass knows which intermediates the route needs later and how long each recipe is used
   const fishOnly = state.prof === FISHING, combined = state.prof === FISH_COOK;
+  // "Fewer, longer steps": what the "Most profit" route would gain over it (two more passes, skipped when slow)
+  const netOf = x => state.sell === "ah" ? x.resaleAh - x.total : state.sell === "vendor" ? x.resaleVendor - x.total : -x.total;
+  let vsProfit = null;
+  if (!fishOnly && state.mode === "afk" && performance.now() - t0 <= 300) { // about 150 ms a pass
+    const keep = [BAGS, BOOK0]; // render reads both from the route it shows
+    const q1 = plan(null, null, null, { mode: "profit" });
+    const q = plan(q1.demand, q1.usage, q1.fishWant, { mode: "profit" });
+    [BAGS, BOOK0] = keep;
+    vsProfit = { extra: netOf(q) - netOf(p), steps: q.steps.length };
+  }
   $("#fishPanel").hidden = !p.fish;
   $("#routePanel").hidden = $("#shopPanel").hidden = fishOnly;
-  $("#fishCtl").hidden = !p.fish; $("#stationsCtl").hidden = fishOnly;
+  $("#fishCtl").hidden = !p.fish; $("#stationsCtl").hidden = fishOnly || !stations.length;
   document.querySelectorAll(".fish-both").forEach(e => { e.hidden = !combined; });
   $("#fromLbl").textContent = combined ? "Cooking from skill" : "From skill";
   $("#toLbl").textContent = combined ? "Cooking to skill" : "To skill";
@@ -724,7 +896,9 @@ function render() {
     <div class="pick sum-main"><span class="eyebrow">${main.big}</span><b>${main.val}</b><small>${main.sub}</small></div>
     <div class="sum-stats">
       ${rest.map(x => `<div><span class="eyebrow">${x.small}</span><b>${x.val}</b><small>${x.sub}</small></div>`).join("")}
-      ${fishOnly ? "" : `<div><span class="eyebrow">Crafts</span><b>${p.steps.reduce((a, s) => a + s.crafts, 0).toLocaleString("en-GB")}</b></div>
+      ${fishOnly ? "" : `<div><span class="eyebrow">Steps</span><b>${p.steps.length}</b><small>${state.mode === "profit" ? "cheapest recipe at every point"
+        : vsProfit ? (vsProfit.extra > 0 ? `${gold(vsProfit.extra)} more than` : "no dearer than") + ` "Most profit" (${vsProfit.steps} steps)` : "fewer, longer steps"}</small></div>
+      <div><span class="eyebrow">Crafts</span><b>${p.steps.reduce((a, s) => a + s.crafts, 0).toLocaleString("en-GB")}</b></div>
       <div><span class="eyebrow">${combined ? "Cooking" : "Skill"}</span><b>${state.from} → ${p.stuck ? p.stuck.s : p.capped ?? state.to}</b></div>`}
       ${p.fish ? `<div><span class="eyebrow">Fishing</span><b>${p.fish.from} → ${p.fish.stuck ?? p.fish.end}</b><small>${hrs(p.fish.hours)} · ${Math.round(p.fish.catches).toLocaleString("en-GB")} catches</small></div>` : ""}
     </div>`;
@@ -760,6 +934,7 @@ function render() {
     // inventory: made here and used later / made earlier and used here
     const used = [...st.used.entries()].map(([id, n]) => `${n} × ${esc(ITEMS[id]?.n || id)}`);
     const kept = Math.round(st.kept);
+    const fromBags = bagsTag(st); // "Materials I already have" this step uses
     const name = r.item ? wh(r.item, r.name) : esc(r.name);
     const s = sellInfo(st, p);
     const vend = !showVend ? "" : !s ? `<td class="num c-vend"><span class="muted">—</span></td>`
@@ -769,15 +944,13 @@ function render() {
     let html = train + `<tr class="row${open ? " open" : ""}" data-key="${key}" tabindex="0" aria-expanded="${open}">
       <td class="num rng">${st.from}–${st.to}</td>
       <td class="c-craft"><b>${st.crafts} × ${name}</b>${learnTag(st)}<div class="meta">${reag}${r.needs ? ` · needs ${esc(r.needs)}` : ""}${toolsNeed.length ? ` · needs ${toolsNeed.map(esc).join(", ")}` : ""}</div>${
-        toolsGot.length || kept || used.length ? `<div class="meta step-notes">${toolsGot.length ? `<span class="tag toolget">first: ${toolsGot.join(", ")}</span> ` : ""}${used.length ? `<span class="tag inv">uses ${used.join(", ")} from earlier steps</span> ` : ""}${kept ? `<span class="tag keep">keep ${kept} for later steps</span>` : ""}</div>` : ""}</td>
+        toolsGot.length || kept ? `<div class="meta step-act">${[toolsGot.length ? `<span class="act-tool">First: ${toolsGot.join(", ")}</span>` : "", kept ? `<span class="act-keep">Keep ${kept} for later steps</span>` : ""].filter(Boolean).join(" · ")}</div>` : ""}${used.length || fromBags ? `<div class="meta">${[fromBags ? "uses your bags" : "", used.length ? "uses earlier crafts" : ""].filter(Boolean).join(" · ")}</div>` : ""}</td>
       <td class="num c-cost" data-label="Cost">${gold(st.cost)}${st.once ? `<small>incl. ${[st.patPaid ? (r.source === "trainer" ? "training " : "pattern ") + gold(st.patPaid) : "", st.once - st.patPaid > 0 ? "tools " + gold(st.once - st.patPaid) : ""].filter(Boolean).join(", ")}</small>` : ""}</td>
       ${vend}${ret}
       <td class="num c-x"><button class="x" data-ex="${r.id}" title="Exclude this recipe and re-plan" aria-label="Exclude ${esc(r.name)} and re-plan">✕</button></td>
     </tr>`;
     if (open) {
       const tags = [
-
-        r.needs ? `<span class="tag">${esc(r.needs)}</span>` : "",
         r.isNew ? `<span class="tag new">new in Forever</span>` : "",
         r.est ? `<span class="tag">trainer skill est.</span>` : "",
       ].filter(Boolean).join(" ");
@@ -785,6 +958,7 @@ function render() {
         <div><span class="k">How to learn</span><span>${learnText(st)}</span></div>
         <div><span class="k">Skill-up colours</span><span>learn ${r.learn} · <span class="o">${r.yellow}</span> <span class="y">${r.green}</span> <span class="gr">${r.grey}</span></span></div>
         ${pattern ? `<div><span class="k">Pattern</span><span>${pattern}</span></div>` : ""}
+        ${used.length || fromBags ? `<div><span class="k">Uses what you have</span><span>${[fromBags.replace(/<[^>]+>/g, "").trim(), used.length ? `${used.join(", ")} from earlier steps` : ""].filter(Boolean).join("; ")}</span><small>not bought again</small></div>` : ""}
         ${toolsNeed.length ? `<div><span class="k">Tools</span><span>${toolsNeed.map(esc).join(", ")}</span><small>bought or made once, the first time a step needs them</small></div>` : ""}
         ${altFact(st)}
         <div><span class="k">Crafts per point</span><span>${(st.crafts / Math.max(1, st.to - st.from)).toFixed(1)}</span><small>${st.crafts} crafts for ${st.to - st.from} points</small></div>
@@ -818,6 +992,11 @@ function render() {
   $("#shop").innerHTML = shop.map(e => `<tr><td>${wh(e.id, ITEMS[e.id]?.n || e.id)}${split ? `<small>${e.pre === e.ah + e.vendor ? "all before skill 225" : e.pre ? `${e.pre.toLocaleString("en-GB")} before skill 225` : "only after 225"}</small>` : ""}</td>
       <td class="num">${e.ah ? e.ah.toLocaleString("en-GB") : ""}</td><td class="num">${e.vendor ? e.vendor.toLocaleString("en-GB") : ""}</td>
       <td class="num">${e.ah ? `${listed(makeBook(PRICES, state.faction, state.neutral), e.id).toLocaleString("en-GB")} listed` : `vendor ${gold(ITEMS[e.id]?.v)}`}</td></tr>`).join("");
+  const last = p.steps.length ? Math.min(p.steps[p.steps.length - 1].to, state.to) : state.from;
+  EXPORT = shopExport(shop, `WFF ${prof.name} ${state.from}-${last}`);
+  $("#aucStr").value = EXPORT.auc;
+  $("#copyAuc").disabled = !EXPORT.auc; $("#copyTxt").disabled = !EXPORT.txt;
+  renderOwned(); // "have N" on the shopping list, owned items the route needs but doesn't buy, the box's hint
   $("#excl").innerHTML = state.excluded.size ? `Excluded: ${[...state.excluded].map(id => { const r = prof.recipes.find(x => x.id === id); return r ? `<button class="chip" data-unex="${id}">${esc(r.name)} ✕</button>` : ""; }).join(" ")}` : "";
   $("#perf").textContent = `Planned in ${Math.round(performance.now() - t0)} ms`;
 }
@@ -832,7 +1011,7 @@ function bind() {
   $("#patterns").onchange = e => { store.set("lv:patternsV2", true); set("patterns", e.target.value); };
   $("#time").oninput = e => set("time", Math.max(0, Number(e.target.value) || 0));
   $("#level").oninput = e => set("level", Math.max(1, Math.min(60, Number(e.target.value) || 60)));
-  $("#fast").onchange = e => set("fast", e.target.checked);
+  $("#mode").onchange = e => set("mode", e.target.value);
   $("#sellmode").onchange = e => set("sell", e.target.value);
   $("#wait").onchange = e => set("wait", Number(e.target.value));
   $("#mining").onchange = e => set("mining", e.target.checked);
@@ -856,7 +1035,172 @@ function bind() {
     if (tr && !e.target.closest("a, button")) toggle(tr);
   };
   $("#steps").onkeydown = e => { const tr = e.target.closest("tr.row"); if (tr && e.target === tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(tr); } };
+  $("#copyAuc").onclick = () => copyText(EXPORT.auc);
+  $("#copyTxt").onclick = () => copyText(EXPORT.txt);
   $("#excl").onclick = e => { const id = Number(e.target.dataset?.unex); if (id) { state.excluded.delete(id); store.set("lv:excluded", [...state.excluded]); render(); } };
+}
+
+// --- materials I already have ---------------------------------------------------------------
+// Pasted lines ("20x Linen Cloth", "Linen Cloth x20", "Linen Cloth 20", "20 Linen Cloth") become inventory
+// lots worth nothing (you own them already), put first in line by plan(), so steps use them before vendor,
+// AH or crafting. BAGS records what the last plan() took from them (render's second pass, the one shown).
+let NAME_IDX = null, OWNED_CACHE = null, BAGS = null;
+const normName = s => String(s).toLowerCase().replace(/[’‘`]/g, "'").replace(/\s+/g, " ").trim();
+function nameIndex() {
+  if (NAME_IDX) return NAME_IDX;
+  const reagents = new Set(REC.professions.flatMap(p => p.recipes.flatMap(r => r.reagents.map(([id]) => id))));
+  NAME_IDX = new Map();
+  for (const [k, it] of Object.entries(ITEMS)) {
+    if (!it?.n) continue;
+    const id = Number(k), key = normName(it.n), cur = NAME_IDX.get(key);
+    if (cur == null || (!reagents.has(cur) && reagents.has(id))) NAME_IDX.set(key, id); // same name twice: the one recipes use
+  }
+  return NAME_IDX;
+}
+// -> {items: Map(item id -> units), bad: [lines that match no item]}
+function parseOwned(text) {
+  const idx = nameIndex(), items = new Map(), bad = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.replace(/^[\s\-*•·]+/, "").replace(/[[\]]/g, "").trim();
+    if (!line) continue;
+    const tries = [
+      [/^(\d+)\s*[x×*]\s*(.+)$/i, 2, 1], // 20x Linen Cloth
+      [/^(\d+)\s+(.+)$/, 2, 1], // 20 Linen Cloth
+      [/^(.+?)\s*[x×*]\s*(\d+)$/i, 1, 2], // Linen Cloth x20
+      [/^(.+?)(?:\s*[:,;=\t]\s*|\s+)(\d+)$/, 1, 2], // Linen Cloth 20, Linen Cloth: 20
+    ];
+    let hit = null;
+    for (const [re, ni, qi] of tries) {
+      const m = line.match(re); if (!m) continue;
+      const id = idx.get(normName(m[ni])), q = Number(m[qi]);
+      if (id != null && q > 0) { hit = [id, Math.min(q, 1e6)]; break; }
+    }
+    if (!hit && idx.has(normName(line))) hit = [idx.get(normName(line)), 1]; // a name alone counts as 1
+    if (hit) items.set(hit[0], (items.get(hit[0]) || 0) + hit[1]);
+    else bad.push(raw.trim());
+  }
+  return { items, bad };
+}
+function ownedParsed() {
+  if (!ITEMS || !REC) return { items: new Map(), bad: [] };
+  if (OWNED_CACHE?.text !== state.owned) OWNED_CACHE = { text: state.owned, ...parseOwned(state.owned) };
+  return OWNED_CACHE;
+}
+// plan(): put the owned units in the inventory before anything else (no sale credit to give up)
+function seedOwned(lots) {
+  BAGS = { bags: true, vendor: 0, ah: 0, onAh: 0, kept: 0, used: new Map(), taken: new Map() };
+  for (const [id, n] of ownedParsed().items) lots.set(id, [{ st: BAGS, n, vend: 0, ah: 0, onAh: 0, owned: true }]);
+}
+// plan()'s takeInv: k owned units of id went to step `user` (null for tools)
+function takeOwned(bags, user, id, k) {
+  bags.taken.set(id, (bags.taken.get(id) || 0) + k);
+  if (user) (user.bags ||= new Map()).set(id, (user.bags.get(id) || 0) + k);
+}
+function bagsTag(st) {
+  if (!st.bags?.size) return "";
+  return `<span class="tag bags">uses ${[...st.bags].map(([id, n]) => `${n.toLocaleString("en-GB")} × ${esc(ITEMS[id]?.n || id)}`).join(", ")} from your bags</span> `;
+}
+// Shopping list: "have N" next to bought items, rows for owned items the route needs but doesn't buy;
+// and the hint under the box (what was recognised, what the route uses, lines that match nothing).
+function renderOwned() {
+  const { items, bad } = ownedParsed();
+  const taken = BAGS?.taken || new Map();
+  const tbody = $("#shop");
+  const cols = tbody.closest("table")?.querySelectorAll("thead th").length || 4;
+  const n0 = x => x.toLocaleString("en-GB");
+  const extra = [];
+  for (const [id, n] of taken) {
+    const have = items.get(id) || 0;
+    const note = `<small class="pos">have ${n0(have)}${n < have ? `, the route uses ${n0(n)}` : ""}</small>`;
+    const a = tbody.querySelector(`a[href="https://www.wowhead.com/forever/item=${id}"]`);
+    if (a) a.closest("td").insertAdjacentHTML("beforeend", note);
+    else extra.push(`<tr class="owned-row"><td>${wh(id, ITEMS[id]?.n || id)}${note}</td><td colspan="${cols - 1}"><span class="muted">nothing to buy</span></td></tr>`);
+  }
+  tbody.insertAdjacentHTML("beforeend", extra.join(""));
+  const unused = [...items.keys()].filter(id => !taken.has(id)).map(id => esc(ITEMS[id]?.n || id));
+  const more = (list, k) => list.slice(0, k).join(", ") + (list.length > k ? ` and ${list.length - k} more` : "");
+  const parts = [];
+  if (items.size) parts.push(`${items.size} item${items.size === 1 ? "" : "s"} recognised, ${taken.size ? `${taken.size} used by this route` : "none used by this route"}.`);
+  if (unused.length && taken.size) parts.push(`Not used: ${more(unused, 8)}.`);
+  if (bad.length) parts.push(`<span class="neg">No item called: ${more(bad.map(esc), 6)}.</span>`);
+  $("#ownedHint").innerHTML = parts.join(" ");
+}
+
+// --- share link: the plan's settings in the address (#p=Tailoring&from=1&to=300&…) -----------------
+// Opening such a link overrides the saved settings (and saves them). Owned materials go in only while the
+// list is short; without "own" in the link the reader's own list stays. Crafting stations aren't included.
+const POLES = [0, 5, 15, 20, 25, 35];
+const isPlanHash = h => /(^|&)p=/.test(h);
+let HASH_LIVE = false; // the first render writes the address only when the page was opened with a plan link
+function ownedHashPart() {
+  const s = [...ownedParsed().items].map(([id, n]) => `${id}x${n}`).join(".");
+  return s && s.length <= 600 ? s : null;
+}
+function planHash() {
+  const q = new URLSearchParams({ p: state.prof, from: state.from, to: state.to, sell: state.sell, pat: state.patterns, f: state.faction,
+    lvl: state.level, t: state.time, wait: state.wait, m: state.mode, mine: +state.mining, bw: +state.neutral });
+  if (fishMode()) { q.set("ff", state.ffrom); q.set("ft", state.fto); q.set("pole", state.pole); q.set("cast", state.castSec); q.set("hv", state.hourValue); q.set("cook", +state.cookCatch); }
+  if (state.excluded.size) q.set("ex", [...state.excluded].join("."));
+  const own = ownedHashPart(); if (own) q.set("own", own);
+  return q.toString();
+}
+function syncHash() {
+  if (!HASH_LIVE) { HASH_LIVE = true; if (!isPlanHash(location.hash.slice(1))) return; }
+  const h = "#" + planHash();
+  if (location.hash !== h) history.replaceState(history.state, "", h); // no history entry per change
+}
+function applyHash() {
+  const raw = location.hash.slice(1);
+  if (!isPlanHash(raw)) return;
+  const q = new URLSearchParams(raw);
+  const has = k => q.has(k) && q.get(k) !== "";
+  const num = (k, lo, hi, int = true) => { if (!has(k)) return null; const v = Number(q.get(k)); return isFinite(v) ? Math.max(lo, Math.min(hi, int ? Math.round(v) : v)) : null; };
+  const pick = (k, list) => list.includes(q.get(k)) ? q.get(k) : null;
+  const bool = k => has(k) ? q.get(k) === "1" : null;
+  const put = (k, v, key = "lv:" + k) => { if (v == null) return; state[k] = v; store.set(key, v); };
+  const names = [...REC.professions.filter(p => p.name !== "Mining").map(p => p.name), FISHING, FISH_COOK];
+  put("prof", pick("p", names));
+  put("from", num("from", 1, 299)); put("to", num("to", 2, 300));
+  put("sell", pick("sell", ["ah", "vendor", "none"]));
+  const pat = pick("pat", ["buyable", "vendor", "trainer", "all"]);
+  if (pat) { store.set("lv:patternsV2", true); put("patterns", pat); }
+  put("faction", pick("f", ["alliance", "horde"]), "faction");
+  put("level", num("lvl", 1, 60)); put("time", num("t", 0, 1e6, false));
+  const w = num("wait", 1, 7); put("wait", [1, 3, 7].includes(w) ? w : null);
+  put("mode", pick("m", ["afk", "profit"])); put("mining", bool("mine")); put("neutral", bool("bw"), "neutral");
+  put("ffrom", num("ff", 1, 299)); put("fto", num("ft", 2, 300));
+  const pole = num("pole", 0, 35); put("pole", POLES.includes(pole) ? pole : null);
+  put("castSec", num("cast", 5, 40)); put("hourValue", num("hv", 0, 1e6, false)); put("cookCatch", bool("cook"));
+  if (state.from >= state.to) { if (has("to") && !has("from")) state.from = Math.max(1, state.to - 1); else state.to = Math.min(300, state.from + 1); store.set("lv:from", state.from); store.set("lv:to", state.to); }
+  const known = new Set(); // only exclusions that name a recipe of this profession (or the Mining helper)
+  for (const r of profData()?.recipes || []) known.add(r.id);
+  for (const r of REC.professions.find(p => p.name === "Mining")?.recipes || []) known.add(r.id);
+  state.excluded = new Set((q.get("ex") || "").split(".").map(Number).filter(n => n > 0 && known.has(n))); // the link's exclusions, or none
+  store.set("lv:excluded", [...state.excluded]);
+  // the link's materials are shown but not saved over your own list until you edit the box
+  if (has("own")) state.owned = q.get("own").split(".").map(x => x.split("x").map(Number))
+    .filter(([id, n]) => ITEMS[id]?.n && n > 0).map(([id, n]) => `${n}x ${ITEMS[id].n}`).join("\n");
+}
+async function copyPlanLink() {
+  const url = location.href.split("#")[0] + "#" + planHash();
+  HASH_LIVE = true; history.replaceState(history.state, "", url);
+  let ok = false;
+  try { await navigator.clipboard.writeText(url); ok = true; } catch { /* no clipboard access: show the link instead */ }
+  const ownNote = ownedParsed().items.size && !ownedHashPart() ? " Your materials list is too long for a link, so it isn't included." : "";
+  $("#shareMsg").innerHTML = ok ? `Link copied: it opens this plan, priced with the auction house of that moment.${ownNote}`
+    : `Copy this link: <a href="${esc(url)}">${esc(url)}</a>${ownNote}`;
+}
+// the "Materials I already have" box, the share button, and pasted plan links in the same tab
+function bindPlanExtras() {
+  const box = $("#owned");
+  box.value = state.owned;
+  let timer = 0;
+  box.oninput = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { state.owned = box.value; store.set("lv:owned", box.value); render(); }, 400);
+  };
+  $("#shareLink").onclick = copyPlanLink;
+  addEventListener("hashchange", () => { const h = location.hash.slice(1); if (isPlanHash(h) && h !== planHash()) location.reload(); });
 }
 
 // The bot publishes new prices about hourly. Re-planning by itself would move the route under the
@@ -883,13 +1227,14 @@ async function load() {
     ITEMS = REC.items;
     for (const [id, it] of Object.entries(FISH.items)) ITEMS[id] ||= it; // fish, lures and junk that no recipe uses
     FISH_IDS = new Set([...FISH.spots.flatMap(sp => sp.fish.map(f => f[0])), 13755, 13756]);
+    applyHash(); bindPlanExtras(); // a shared link's settings override the saved ones
     $("#wait").value = state.wait;
     const names = [...REC.professions.filter(p => p.name !== "Mining").map(p => p.name), FISHING, FISH_COOK];
     if (!names.includes(state.prof)) state.prof = names[0];
     $("#prof").innerHTML = names.map(n => `<option ${n === state.prof ? "selected" : ""}>${esc(n)}</option>`).join("");
     $("#ffrom").value = state.ffrom; $("#fto").value = state.fto; $("#pole").value = String(state.pole); $("#castsec").value = state.castSec; $("#hourval").value = state.hourValue; $("#cookcatch").checked = state.cookCatch;
     $("#from").value = state.from; $("#to").value = state.to;
-    $("#patterns").value = state.patterns; $("#time").value = state.time; $("#level").value = state.level; $("#fast").checked = state.fast; $("#sellmode").value = state.sell; $("#mining").checked = state.mining; $("#neutral").checked = state.neutral;
+    $("#patterns").value = state.patterns; $("#time").value = state.time; $("#level").value = state.level; $("#mode").value = state.mode; $("#sellmode").value = state.sell; $("#mining").checked = state.mining; $("#neutral").checked = state.neutral;
     $("#status").innerHTML = `Prices updated <b>${ago(PRICES.updated)}</b> · recipes from client build ${esc(REC.build)}`;
     bind(); render();
   } catch (e) {

@@ -3,6 +3,9 @@
    same few components (header, intro, hero, panels, controls, tables, footer), so one stylesheet stays
    small and fast. Token and class names are shared with the JS and other pages: add, don't rename. */
 
+/* `hidden` must win over component display rules (.ctl is grid, fieldset.profs is flex) */
+[hidden] { display: none !important; }
+
 /* ---------- tokens ---------- */
 :root {
   --bg: #f4efe4;
@@ -264,6 +267,18 @@ details.explain h3 { font-size: 13px; text-transform: uppercase; letter-spacing:
 }
 .chip:hover { color: var(--text); border-color: var(--line-strong); }
 .chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.chip:disabled { opacity: .5; cursor: default; }
+
+/* shopping-list export (leveling page) */
+.export-btns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.copy-msg { font-size: var(--fs-xs); font-weight: 600; color: var(--good); }
+details.export { margin-top: var(--sp-4); }
+details.export textarea {
+  display: block; width: 100%; margin-top: var(--sp-3); resize: vertical; min-height: 64px;
+  font: var(--fs-xs)/1.5 ui-monospace, Consolas, monospace; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3);
+}
+details.export textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ---------- tables ---------- */
 .table-scroll { overflow-x: auto; margin: 0 calc(-1 * var(--sp-5)); padding: 0 var(--sp-5); }
@@ -535,3 +550,36 @@ table.steps tr.train .meta { display: block; margin-top: 2px; }
 /* leveling: how a step's recipe is learned */
 .tag.learn { color: var(--muted); }
 .tag.learn.train { color: var(--text); border-color: var(--line-strong); }
+
+/* leveling: materials I already have + share link */
+.owned-ctl .ctl.owned { flex: 1 1 360px; max-width: 640px; }
+.owned .hint { margin: 0; }
+textarea {
+  font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2); width: 100%; min-height: 96px; resize: vertical;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 8px 12px;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+textarea:hover { border-color: var(--accent); }
+textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background-color: var(--surface); }
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.share-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+.share-msg { font-size: var(--fs-xs); color: var(--muted); }
+.tag.bags { color: var(--good); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+
+/* "More options" split into labelled groups (opt-group > h3.opt-h + .controls) */
+details.more > .opt-group { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px dashed var(--line); }
+details.more > .opt-group:first-of-type { border-top: 0; padding-top: 0; }
+.opt-h { margin: 0 0 var(--sp-3); font-family: inherit; font-size: var(--fs-xs); font-weight: 700; color: var(--text); letter-spacing: .02em; }
+.opt-group > .controls + .controls { margin-top: var(--sp-4); }
+.opt-group > .hint { margin-top: var(--sp-2); }
+.panel:not(.settings) > details.more:not(:last-child) { margin-bottom: var(--sp-4); }
+.panel:not(.settings) > .controls + details.more { margin-top: var(--sp-4); }
+.panel > .controls + .hint { margin-top: calc(-1 * var(--sp-2)); }
+
+/* row notes that ask you to do something (get a tool first, keep output for later): plain text, no chips */
+.step-act { color: var(--text); }
+.act-tool { color: var(--accent); }
+.act-tool a { color: inherit; }
+.act-keep { color: var(--good); }
+.pat-txt { color: var(--accent); white-space: nowrap; }
+@media (max-width: 760px) { .controls .ctl-wide { flex-basis: 100%; } details.more > summary small { display: none; } }
