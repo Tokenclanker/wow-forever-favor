@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       ids:
-        description: "Extra item ids to check (comma or space separated)"
+        description: "Extra item ids to check (comma or space separated), or all"
         default: ""
 
 permissions:
