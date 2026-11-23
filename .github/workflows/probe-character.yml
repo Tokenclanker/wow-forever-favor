@@ -1,0 +1,32 @@
+name: Probe character API
+
+# Manual only: shows which Blizzard Profile API paths answer for a WoW Forever character and what they
+# contain, to see whether the site could fill its forms from a character.
+on:
+  workflow_dispatch:
+    inputs:
+      char:
+        description: "Character first-last name, as in the armory URL"
+        default: "saphappy-papi"
+      guild:
+        description: "Guild name"
+        default: "out-of-network-healers"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Probe
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          CHAR: ${{ inputs.char }}
+          GUILD: ${{ inputs.guild }}
+        run: node tools/probe-character.mjs
