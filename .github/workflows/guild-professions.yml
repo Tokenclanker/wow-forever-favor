@@ -1,0 +1,28 @@
+name: Guild professions
+
+# Manual only: prints every guild member's level, class and profession skills from Blizzard's
+# WoW Forever Profile API, for updating the guild crafting tracker. Saves nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      guild:
+        description: "Guild name"
+        default: "out-of-network-healers"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          GUILD: ${{ inputs.guild }}
+        run: node tools/guild-professions.mjs
