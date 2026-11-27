@@ -2,7 +2,7 @@
 // Gear listings come from data/de-listings.json (tools/scan-de.mjs, hourly); material prices from
 // data/prices.json (cheapest listing on the same house); odds from data/de-table.js.
 import { $, store, esc, gold, loadPrices, loadJson, ago, bindFaction, wh } from "./common.js";
-import { deOutcome } from "./data/de-table.js";
+import { deOutcome, MAT } from "./data/de-table.js";
 
 const AH_CUT = 0.95;
 const MAX_ROWS = 300;
@@ -100,6 +100,55 @@ function render() {
   }).join("")
     + (all.length > MAX_ROWS ? `<tr><td colspan="6" class="empty">Showing the best ${MAX_ROWS} of ${all.length}. Raise "Hide items with profit under" to narrow it down.</td></tr>` : "")
     || `<tr><td colspan="6" class="empty">Nothing is worth disenchanting with these settings right now.</td></tr>`;
+  renderMats();
+}
+
+// Cheapest source of each disenchanting material: buy it, or buy gear that mostly gives it and disenchant it.
+// Cost per unit via gear = (buyout − sale value of the other materials) ÷ expected amount of this one.
+const PRIMARY = 0.75;
+function matSources() {
+  const houses = [state.faction, ...(state.neutral ? ["neutral"] : [])];
+  const book = PRICES.factions[state.faction]?.items || {};
+  const buy = id => book[id]?.[0]?.[0] ?? null;
+  const sell = id => (book[id]?.[0]?.[0] ?? 0) * AH_CUT;
+  const by = {};
+  for (const h of houses) {
+    for (const [iid, price] of DE.houses[h]?.listings || []) {
+      const it = DE.items[iid];
+      const mats = it && deOutcome(it[1], it[2], it[4] === "W");
+      if (!mats) continue;
+      for (const m of mats) {
+        if (m.p < PRIMARY) continue;
+        const others = mats.reduce((a, o) => a + (o.id === m.id ? 0 : o.qty * sell(o.id)), 0);
+        const per = Math.max(0, (price - others) / m.qty);
+        (by[m.id] ||= []).push({ per, qty: m.qty, iid, it, price, h });
+      }
+    }
+  }
+  return Object.values(MAT).map(id => {
+    const opts = (by[id] || []).sort((a, b) => a.per - b.per);
+    const direct = buy(id), best = opts[0];
+    const cheaper = direct == null ? opts : opts.filter(o => o.per < direct);
+    return { id, direct, best, units: cheaper.reduce((a, o) => a + o.qty, 0) };
+  }).filter(r => r.direct != null || r.best);
+}
+
+function renderMats() {
+  $("#matRows").innerHTML = matSources().map(r => {
+    const viaDE = r.best && (r.direct == null || r.best.per < r.direct);
+    const save = viaDE && r.direct ? Math.round((1 - r.best.per / r.direct) * 100) : 0;
+    const gear = r.best
+      ? `<span class="q-${r.best.it[1]}">${wh(r.best.iid, r.best.it[0])}</span> <span class="muted">${gold(r.best.price)} · ${where(r.best.h)}</span>`
+      : `<span class="muted">no gear priced near it</span>`;
+    return `<tr>
+      <td>${wh(r.id, matName(r.id))}</td>
+      <td class="num">${r.direct == null ? `<span class="muted">none listed</span>` : gold(r.direct)}</td>
+      <td>${gear}</td>
+      <td class="num">${r.best ? gold(Math.round(r.best.per)) : "—"}</td>
+      <td>${viaDE ? `<span class="pos">Disenchant${save ? ` (${save}% less)` : ""}</span>` : "Buy it"}</td>
+      <td class="num">${viaDE ? `~${r.units < 10 ? r.units.toFixed(1) : Math.round(r.units)}` : "—"}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="empty">No material prices yet.</td></tr>`;
 }
 
 function bind() {

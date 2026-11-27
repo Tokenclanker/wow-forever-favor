@@ -31,7 +31,7 @@
   <section class="intro">
     <span class="eyebrow">Buy gear, disenchant it, sell the materials</span>
     <h1>Disenchanting</h1>
-    <p class="lead">Green, blue and purple gear on the auction house that is worth more as dust, essences and shards than it costs.</p>
+    <p class="lead">Green, blue and purple gear on the auction house that is worth more as dust, essences and shards than it costs. Leveling Enchanting? See the <a href="#mats">cheapest source of each material</a>.</p>
     <div class="intro-meta">
       <p class="status" id="status">Loading…</p>
       <span class="pill" id="market">US · Normal</span>
@@ -89,6 +89,21 @@
     </div>
   </section>
 
+  <section class="panel" id="mats">
+    <div class="panel-head">
+      <div>
+        <h2>Cheapest source of each material, for leveling Enchanting</h2>
+        <p>Buy the material on the auction house, or buy gear and disenchant it? The disenchant cost per unit counts what you'd get selling the other materials it gives. Only gear that mostly gives that material (75%+ of the time) is used, so the result is dependable over a few items.</p>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="de-mats">
+        <thead><tr><th>Material</th><th class="num">Buy on AH</th><th>Best gear to disenchant</th><th class="num">Cost per unit that way</th><th>Cheaper way</th><th class="num">Units at that price or better</th></tr></thead>
+        <tbody id="matRows"></tbody>
+      </table>
+    </div>
+  </section>
+
   <details class="explain notes">
     <summary>How this works</summary>
     <ul>
@@ -97,6 +112,7 @@
       <li><b>Any Enchanting skill can disenchant any item</b> in WoW Forever, so you only need to have learned Disenchant.</li>
       <li><b>Material prices</b> are the cheapest listing of each dust, essence and shard on your faction's auction house. "What they sell for" takes off the 5% auction house cut; selling a lot at once will push prices down.</li>
       <li><b>Prices are up to about an hour old</b>, and the gear list is refreshed every hour. Someone may have bought an item already. Purple items under required level 35 aren't valued (their results aren't documented), and the Arcane Salvager's disenchanting bonus isn't included.</li>
+      <li><b>Cheapest source of each material:</b> for each auction, cost per unit = (buyout − what the other materials it gives would sell for) ÷ how many of that material it gives on average. "Units at that price or better" adds up the expected amount from every auction that beats buying the material directly. It ignores the quality and profit filters above, but follows "Also buy from".</li>
       <li><b>Price history:</b> the ↗ next to an item opens its price history on wowauctions.net.</li>
     </ul>
   </details>
