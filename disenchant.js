@@ -12,6 +12,8 @@ const state = {
   q: store.get("de:q", { U: true, R: true, E: true }),
   val: store.get("de:val", "sell"),
   min: store.get("de:min", 100),
+  shard: store.get("de:shard", 11178),   // Large Radiant Shard
+  need: store.get("de:need", 10),
   open: new Set(),
 };
 let PRICES, DE, ITEMS;
@@ -100,6 +102,7 @@ function render() {
   }).join("")
     + (all.length > MAX_ROWS ? `<tr><td colspan="6" class="empty">Showing the best ${MAX_ROWS} of ${all.length}. Raise "Hide items with profit under" to narrow it down.</td></tr>` : "")
     || `<tr><td colspan="6" class="empty">Nothing is worth disenchanting with these settings right now.</td></tr>`;
+  renderShards();
   renderMats();
 }
 
@@ -133,6 +136,66 @@ function matSources() {
   }).filter(r => r.direct != null || r.best);
 }
 
+// Shard planner: cheapest mix of AH shard listings and blue / purple items that disenchant into the shard.
+const SHARDS = [
+  ["sgs", "blues up to required level 20"], ["lgs", "blues required level 21-25"], ["sgw", "blues 26-30"], ["lgw", "blues 31-35"],
+  ["srs", "blues 36-40, purples 35-40"], ["lrs", "blues 41-45, purples 41-45"], ["sbs", "blues 46-50, purples 46-50"], ["lbs", "blues 51+"],
+];
+function shardSources(id) {
+  const houses = [state.faction, ...(state.neutral ? ["neutral"] : [])];
+  const src = [];
+  for (const h of houses) {
+    for (const [price, qty] of PRICES.factions[h]?.items?.[id] || []) src.push({ kind: "ah", h, per: price, price, yield: 1, qty });
+    for (const [iid, price] of DE.houses[h]?.listings || []) {
+      const it = DE.items[iid];
+      if (!it || it[1] === "U") continue;
+      const out = deOutcome(it[1], it[2], it[4] === "W");
+      const m = out && out.find(o => o.id === id);
+      if (!m) continue;
+      const y = it[1] === "R" ? 1 : m.qty;
+      src.push({ kind: "item", h, iid, it, price, yield: y, per: price / y, qty: 1 });
+    }
+  }
+  return src.sort((a, b) => a.per - b.per);
+}
+
+function renderShards() {
+  const id = state.shard, need = Math.max(1, state.need | 0);
+  const src = shardSources(id);
+  let got = 0, spent = 0, used = [], ahOnly = 0, ahUnits = 0;
+  for (const s of src) if (s.kind === "ah") { const take = Math.min(s.qty, need - ahUnits); if (take > 0) { ahUnits += take; ahOnly += take * s.price; } }
+  for (const s of src) {
+    if (got >= need) break;
+    s.used = true;
+    if (s.kind === "ah") { const take = Math.min(s.qty, Math.ceil(need - got)); got += take; spent += take * s.price; used.push({ ...s, take, got, spent }); }
+    else { got += s.yield; spent += s.price; used.push({ ...s, take: 1, got, spent }); }
+  }
+  const blues = used.filter(u => u.kind === "item").length;
+  const name = matName(id);
+  const vsAH = ahUnits >= need
+    ? (ahOnly > spent ? `Buying all ${need} on the AH would cost ${gold(ahOnly)}: you save <span class="pos">${gold(ahOnly - spent)}</span>.` : `That's the same as buying them all on the AH.`)
+    : `Only ${ahUnits} ${ahUnits === 1 ? "is" : "are"} listed on the AH, so blues fill the gap.`;
+  $("#shardPlan").innerHTML = !src.length
+    ? `<p class="muted">No ${esc(name)} or blue items that give it are listed right now.</p>`
+    : got < need
+      ? `<p><b>Only about ${Math.floor(got)} ${esc(name)}</b> can be had right now (${gold(spent)} for all of them): not enough shards or blues are listed for ${need}.</p>`
+      : `<p><b>${need} × ${wh(id, name)} for ${gold(spent)}</b> (${gold(Math.round(spent / got))} per shard on average)${blues ? `, including <b>${blues} item${blues > 1 ? "s" : ""} to disenchant</b>` : ", all bought as shards"}. ${vsAH}</p>`;
+  const left = src.filter(s => !s.used);
+  const next = [...left.filter(s => s.kind === "ah").slice(0, 3), ...left.filter(s => s.kind === "item").slice(0, 5)].sort((a, b) => a.per - b.per);
+  const row = (s, muted) => `<tr${muted ? ' class="muted"' : ""}>
+      <td>${s.kind === "ah" ? `${s.take ?? s.qty} × ${wh(id, name)}` : `<span class="q-${s.it[1]}">${wh(s.iid, s.it[0])}</span> <span class="muted">→ ${s.yield === 1 ? "1 shard" : `~${s.yield} shards`}</span>`}</td>
+      <td class="muted">${where(s.h)}</td>
+      <td class="num">${s.kind === "item" ? s.it[2] || "—" : ""}</td>
+      <td class="num">${gold(s.price)}${s.kind === "ah" ? " each" : ""}</td>
+      <td class="num">${gold(Math.round(s.per))}</td>
+      <td class="num">${muted ? "" : Math.floor(s.got)}</td>
+      <td class="num">${muted ? "" : gold(s.spent)}</td>
+    </tr>`;
+  $("#shardRows").innerHTML = used.map(u => row(u, false)).join("")
+    + (next.length ? `<tr><td colspan="7" class="empty">Next cheapest shards and items to disenchant:</td></tr>` + next.map(s => row(s, true)).join("") : "")
+    || `<tr><td colspan="7" class="empty">Nothing listed.</td></tr>`;
+}
+
 function renderMats() {
   $("#matRows").innerHTML = matSources().map(r => {
     const viaDE = r.best && (r.direct == null || r.best.per < r.direct);
@@ -164,6 +227,12 @@ function bind() {
   min.onchange = () => { state.min = Number(min.value); store.set("de:min", state.min); render(); };
   const nt = $("#neutral"); nt.checked = state.neutral;
   nt.onchange = () => { state.neutral = nt.checked; store.set("neutral", state.neutral); render(); };
+  const sh = $("#shard");
+  sh.innerHTML = SHARDS.map(([k, note]) => `<option value="${MAT[k]}">${esc(matName(MAT[k]))} (${note})</option>`).join("");
+  sh.value = String(state.shard);
+  sh.onchange = () => { state.shard = Number(sh.value); store.set("de:shard", state.shard); render(); };
+  const nd = $("#need"); nd.value = state.need;
+  nd.oninput = () => { const v = Math.max(1, Math.min(500, nd.value | 0)); if (!nd.value) return; state.need = v; store.set("de:need", v); render(); };
   const toggle = tr => { const k = tr.dataset.key; state.open.has(k) ? state.open.delete(k) : state.open.add(k); render(); };
   $("#rows").onclick = e => { const tr = e.target.closest("tr.row"); if (tr && !e.target.closest("a")) toggle(tr); };
   $("#rows").onkeydown = e => { const tr = e.target.closest("tr.row"); if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(tr); } };
