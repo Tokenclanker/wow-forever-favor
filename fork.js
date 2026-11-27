@@ -11,7 +11,7 @@ css.href = "fork.css";
 document.head.append(css);
 
 // Fork-only pages in the header tabs and footer tool list of every page.
-for (const [page, label] of [["flips.html", "Vendor flips"], ["disenchant.html", "Disenchanting"]]) {
+for (const [page, label] of [["disenchant.html", "Disenchanting"]]) {
   for (const nav of document.querySelectorAll("nav.tabs, .site-foot nav ul")) {
     if (nav.querySelector(`a[href="${page}"]`)) continue;
     const a = Object.assign(document.createElement("a"), { href: page, textContent: label });
