@@ -4,12 +4,13 @@
 // Item details (quality, required level, armor or weapon) come from Blizzard's item data once per item and
 // are cached in data/de-items.json. Credentials from env (repo secrets in Actions).
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { deValue } from "../data/de-table.js";
+import { deValue, deOutcome } from "../data/de-table.js";
 
 const REGION = process.env.REGION || "us", RULESET = process.env.RULESET_ID || "1";
 const HOST = `https://${REGION}.api.blizzard.com`, DYN = `dynamic-forever-${REGION}`, STATIC = `static-forever-${REGION}`;
 const MAX_LOOKUPS = Number(process.env.MAX_LOOKUPS || 6000);   // new items looked up per run (rest next run)
 const KEEP_RATIO = 1.25;   // keep listings up to 25% above the item's disenchant value at material buy prices
+const KEEP_CHEAPEST = 60;  // and, for blue and purple items, the cheapest 60 per shard / crystal type (shard planner)
 const QUALITY = { UNCOMMON: "U", RARE: "R", EPIC: "E" };
 
 const id = process.env.BLIZZARD_CLIENT_ID, secret = process.env.BLIZZARD_CLIENT_SECRET;
@@ -77,13 +78,19 @@ const out = { updated: new Date().toISOString(), region: REGION.toUpperCase(), l
 for (const [fac, m] of Object.entries(byHouse)) {
   const book = prices.factions?.[fac]?.items || {};
   const buyPrice = mid => book[mid]?.[0]?.[0] || 0;   // cheapest listing of that material on this house
-  const keep = [];
+  const keep = [], byShard = {};
   for (const [iid, ls] of Object.entries(m)) {
     const it = cache.items[iid];
     if (!it) continue;
     const ev = deValue(it[1], it[2], it[4] === "W", buyPrice);
-    if (!ev) continue;
-    for (const [price, tl] of ls) if (price <= ev * KEEP_RATIO) { keep.push([Number(iid), price, tl]); out.items[iid] = it; }
+    if (ev == null) continue;
+    for (const [price, tl] of ls) {
+      if (ev && price <= ev * KEEP_RATIO) { keep.push([Number(iid), price, tl]); out.items[iid] = it; }
+      else if (it[1] !== "U") (byShard[deOutcome(it[1], it[2], it[4] === "W")[0].id] ||= []).push([Number(iid), price, tl]);
+    }
+  }
+  for (const ls of Object.values(byShard)) {
+    for (const l of ls.sort((a, b) => a[1] - b[1]).slice(0, KEEP_CHEAPEST)) { keep.push(l); out.items[l[0]] = cache.items[l[0]]; }
   }
   keep.sort((a, b) => a[1] - b[1]);
   out.houses[fac] = { house: houses[fac], listings: keep };
