@@ -10,7 +10,7 @@ set -euo pipefail
 
 UPSTREAM_URL=${UPSTREAM_URL:-https://github.com/AidVir/wow-forever-favor.git}
 KEEP_OURS="data/prices.json data/sales.json data/trends.json data/crate-ids.json data/houses.json"
-RETEXT="index.html favor.html writs.html money.html scripts/fetch-prices.mjs"
+RETEXT="index.html favor.html writs.html money.html scripts/fetch-prices.mjs data/recipes.json"
 
 git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$UPSTREAM_URL"
 git fetch -q upstream main
@@ -25,7 +25,7 @@ for f in $KEEP_OURS; do
   if git cat-file -e "HEAD:$f" 2>/dev/null; then git checkout HEAD -- "$f"; else git rm -q -f --ignore-unmatch -- "$f"; fi
 done
 
-# 2. Files where this fork only changed wording: take upstream's version, then re-apply the wording below.
+# 2. Files where this fork only changed wording or vendor prices: take upstream's version, then re-apply below.
 for f in $RETEXT; do
   if git ls-files -u -- "$f" | grep -q .; then git checkout --theirs -- "$f"; git add -- "$f"; fi
 done
@@ -55,7 +55,8 @@ wf=.github/workflows/update-prices.yml
 if ! grep -q '^ *REGION: us$' "$wf"; then
   sed -i 's/^\( *\)BLIZZARD_CLIENT_SECRET: \(.*\)$/\1BLIZZARD_CLIENT_SECRET: \2\n\1REGION: us/' "$wf"
 fi
-git add -- index.html favor.html writs.html money.html scripts/fetch-prices.mjs "$wf"
+node tools/apply-vendor-fix.mjs   # Blizzard's current vendor prices (data/vendor-fix.json) into recipes.json
+git add -- index.html favor.html writs.html money.html scripts/fetch-prices.mjs data/recipes.json "$wf"
 
 # Anything still conflicted is a real clash with this fork's changes: stop and leave the fork as it was.
 if git ls-files -u | grep -q .; then
