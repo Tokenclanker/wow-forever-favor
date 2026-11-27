@@ -10,12 +10,18 @@ css.rel = "stylesheet";
 css.href = "fork.css";
 document.head.append(css);
 
-// "Vendor flips" (flips.html, fork-only) in the header tabs and footer tool list of every page.
-for (const nav of document.querySelectorAll("nav.tabs, .site-foot nav ul")) {
-  if (nav.querySelector('a[href="flips.html"]')) continue;
-  const a = Object.assign(document.createElement("a"), { href: "flips.html", textContent: "Vendor flips" });
-  if (nav.tagName === "UL") { const li = document.createElement("li"); li.append(a); nav.append(li); } else nav.append(a);
+// Fork-only pages in the header tabs and footer tool list of every page.
+for (const [page, label] of [["flips.html", "Vendor flips"], ["disenchant.html", "Disenchanting"]]) {
+  for (const nav of document.querySelectorAll("nav.tabs, .site-foot nav ul")) {
+    if (nav.querySelector(`a[href="${page}"]`)) continue;
+    const a = Object.assign(document.createElement("a"), { href: page, textContent: label });
+    if (nav.tagName === "UL") { const li = document.createElement("li"); li.append(a); nav.append(li); } else nav.append(a);
+  }
 }
+
+// Shorter header tab labels so all six tabs fit (the footer and page titles keep the full names).
+const SHORT = { "Profession leveling": "Leveling", "Craftsman's Writs": "Writs" };
+for (const a of document.querySelectorAll("nav.tabs a")) if (SHORT[a.textContent.trim()]) a.textContent = SHORT[a.textContent.trim()];
 
 const faction = () => (document.body.dataset.faction === "alliance" ? "alliance" : "horde");
 const href = id => `${BASE}${faction()}/item-${id}`;

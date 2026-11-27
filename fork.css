@@ -8,3 +8,13 @@ a.ah-hist {
 }
 a.ah-hist:hover,
 a.ah-hist:focus-visible { color: var(--accent); }
+
+/* Item quality colours (disenchant.html). */
+:root { --q-u: #1d8a1d; --q-r: #1766c9; --q-e: #8a3cc9; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --q-u: #4fd34f; --q-r: #5aa2ff; --q-e: #bf7cf5; } }
+:root[data-theme="dark"] { --q-u: #4fd34f; --q-r: #5aa2ff; --q-e: #bf7cf5; }
+.q-U, .q-U a { color: var(--q-u); }
+.q-R, .q-R a { color: var(--q-r); }
+.q-E, .q-E a { color: var(--q-e); }
+table.de tr.detail td { color: var(--muted); font-size: var(--fs-sm, 0.9em); }
+.chk-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }

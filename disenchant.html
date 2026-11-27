@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disenchanting · WoW Forever Market Tools</title>
+<meta name="description" content="Green, blue and purple items on the WoW Forever NA PvE (Normal) auction house that are worth more disenchanted than they cost.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='9' width='24' height='18' rx='2' fill='%23b8862f'/%3E%3Cpath d='M4 14h24M16 9v18' stroke='%23412c0c' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="9" width="24" height="18" rx="2"/><path d="M4 14h24M16 9v18"/></svg>
+      <span class="brand-name"><small>WoW Forever</small><b>Market Tools</b></span>
+    </a>
+    <nav class="tabs" aria-label="Tools"><a href="./">Profession leveling</a><a href="favor.html">Merchant's Favor</a><a href="writs.html">Craftsman's Writs</a><a href="money.html">Money making</a><a href="flips.html">Vendor flips</a><a href="disenchant.html" aria-current="page">Disenchanting</a></nav>
+    <div class="seg" role="radiogroup" aria-label="Faction">
+      <button data-faction="alliance" role="radio">Alliance</button>
+      <button data-faction="horde" role="radio">Horde</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <section class="intro">
+    <span class="eyebrow">Buy gear, disenchant it, sell the materials</span>
+    <h1>Disenchanting</h1>
+    <p class="lead">Green, blue and purple gear on the auction house that is worth more as dust, essences and shards than it costs.</p>
+    <div class="intro-meta">
+      <p class="status" id="status">Loading…</p>
+      <span class="pill" id="market">US · Normal</span>
+    </div>
+  </section>
+
+  <section class="hero" id="hero" aria-live="polite"></section>
+
+  <section class="panel settings" aria-label="Filters">
+    <div class="controls">
+      <div class="ctl">
+        <span class="lbl">Quality</span>
+        <div class="chk-row">
+          <label class="chk"><input id="qU" type="checkbox" checked> <span class="q-U">Green</span></label>
+          <label class="chk"><input id="qR" type="checkbox" checked> <span class="q-R">Blue</span></label>
+          <label class="chk"><input id="qE" type="checkbox" checked> <span class="q-E">Purple</span></label>
+        </div>
+      </div>
+      <div class="ctl">
+        <label for="val">Value the materials at</label>
+        <select id="val">
+          <option value="sell">What they sell for on the AH (−5% cut)</option>
+          <option value="buy">What they cost on the AH (I'll use them)</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <label for="min">Hide items with profit under</label>
+        <select id="min">
+          <option value="0">Show all</option>
+          <option value="25">25c</option>
+          <option value="100">1s</option>
+          <option value="500">5s</option>
+          <option value="2000">20s</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <span class="lbl">Also buy from</span>
+        <label class="chk"><input id="neutral" type="checkbox"> Blackwater AH (neutral)</label>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Gear worth disenchanting, biggest profit first</h2>
+        <p>Profit per item = expected value of the materials − buyout. Tap a row for what it disenchants into.</p>
+      </div>
+    </div>
+    <div class="table-scroll sticky">
+      <table class="de">
+        <thead><tr><th>Item</th><th>AH</th><th class="num">Req. level</th><th class="num">Buyout</th><th class="num">Disenchants for</th><th class="num">Profit</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <details class="explain notes">
+    <summary>How this works</summary>
+    <ul>
+      <li><b>Expected value, not a guarantee.</b> Disenchanting is random. "Disenchants for" is the average over many items: for example a green armor piece gives dust 75% of the time, an essence 20% and a shard 5%. Buy several cheap items rather than counting on one.</li>
+      <li><b>The odds:</b> green armor 75% dust / 20% essence / 5% shard, green weapons the reverse (mostly essence), blue items always one shard (0.5% chance of a Nexus Crystal from required level 51), purple items 2–4 shards, or Nexus Crystals from required level 51. Which dust, essence or shard depends on the item's required level, in 5-level bands. Odds and amounts are Classic's (warcraft.wiki.gg disenchanting tables); bands follow the WoW Forever disenchanting guide (wow-professions.com), which goes by required level.</li>
+      <li><b>Any Enchanting skill can disenchant any item</b> in WoW Forever, so you only need to have learned Disenchant.</li>
+      <li><b>Material prices</b> are the cheapest listing of each dust, essence and shard on your faction's auction house. "What they sell for" takes off the 5% auction house cut; selling a lot at once will push prices down.</li>
+      <li><b>Prices are up to about an hour old</b>, and the gear list is refreshed every hour. Someone may have bought an item already. Purple items under required level 35 aren't valued (their results aren't documented), and the Arcane Salvager's disenchanting bonus isn't included.</li>
+      <li><b>Price history:</b> the ↗ next to an item opens its price history on wowauctions.net.</li>
+    </ul>
+  </details>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap foot">
+    <div>
+      <b>WoW Forever Market Tools</b>
+      <p>Live NA PvE (Normal) auction house prices, turned into answers. World of Warcraft® and Blizzard Entertainment® are trademarks of Blizzard Entertainment, Inc. This fan site is not affiliated with or endorsed by Blizzard. Auction and item data from the Blizzard Battle.net API.</p>
+      <p id="updated"></p>
+    </div>
+    <nav aria-label="Tools (footer)">
+      <h2>Tools</h2>
+      <ul><li><a href="./">Profession leveling</a></li><li><a href="favor.html">Merchant's Favor</a></li><li><a href="writs.html">Craftsman's Writs</a></li><li><a href="money.html">Money making</a></li><li><a href="flips.html">Vendor flips</a></li><li><a href="disenchant.html">Disenchanting</a></li></ul>
+    </nav>
+    <div>
+      <h2>Project</h2>
+      <ul><li><a href="https://github.com/AidVir/wow-forever-favor">Source on GitHub</a></li><li><a href="https://github.com/Tokenclanker/wow-forever-favor">This NA copy</a></li><li><a href="https://www.wowhead.com/forever">Wowhead Forever</a></li></ul>
+    </div>
+  </div>
+</footer>
+<script type="module" src="disenchant.js"></script>
+<script type="module" src="fork.js"></script>
+</body>
+</html>
